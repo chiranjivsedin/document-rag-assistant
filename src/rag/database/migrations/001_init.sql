@@ -1,0 +1,5 @@
+-- Initial schema: documents, chunks, pgvector + full-text indexes.
+-- Pending decisions before this can be written:
+--   * pgvector installed on the target PostgreSQL 18 server
+--   * embedding model (fixes the vector dimension)
+--   * whether LangChain's PGVector manages its own tables instead
