@@ -11,6 +11,7 @@ import time
 from rag.config import get_settings
 from rag.generation.llm import stream_answer
 from rag.generation.prompts import NO_ANSWER, source_label
+from rag.health import check_services
 from rag.providers import get_chat_model, get_embeddings, get_vector_store
 from rag.retrieval.search import retrieve
 
@@ -24,6 +25,11 @@ def main() -> int:
     args = parser.parse_args()
 
     settings = get_settings()
+    problems = check_services(settings, need_chat_model=True)
+    if problems:
+        print("\n".join(problems), file=sys.stderr)
+        return 1
+
     started = time.monotonic()
     store = get_vector_store(settings, get_embeddings(settings))
     docs = retrieve(store, args.question, k=args.k, version=args.version, product=args.product)

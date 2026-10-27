@@ -20,7 +20,7 @@ def test_ollama_embeddings_use_settings():
     embeddings = get_embeddings(settings)
     assert isinstance(embeddings, OllamaEmbeddings)
     assert embeddings.model == "mxbai-embed-large"
-    assert embeddings.base_url == "http://localhost:11434"
+    assert embeddings.base_url == "http://127.0.0.1:11434"
 
 
 def test_unknown_providers_are_rejected():

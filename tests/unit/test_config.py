@@ -8,7 +8,7 @@ def test_defaults():
     assert s.llm_provider == "ollama"
     assert s.llm_model == "gemma3:4b"
     assert s.embedding_model == "nomic-embed-text"
-    assert s.ollama_base_url == "http://localhost:11434"
+    assert s.ollama_base_url == "http://127.0.0.1:11434"
     assert (s.chunk_size, s.chunk_overlap) == (1000, 150)
     assert s.documents_dir == "documents"
     assert s.database_url is None

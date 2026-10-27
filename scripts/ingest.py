@@ -11,6 +11,7 @@ from pathlib import Path
 
 from rag.config import get_settings
 from rag.database.repository import indexed_files
+from rag.health import check_services
 from rag.ingestion.pipeline import ingest
 from rag.providers import get_embeddings, get_vector_store
 
@@ -23,6 +24,10 @@ def main() -> int:
 
     if not args.documents_dir.is_dir():
         print(f"Documents folder not found: {args.documents_dir}", file=sys.stderr)
+        return 1
+    problems = check_services(settings, need_chat_model=False)
+    if problems:
+        print("\n".join(problems), file=sys.stderr)
         return 1
 
     started = time.monotonic()

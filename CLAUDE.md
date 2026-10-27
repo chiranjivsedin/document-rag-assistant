@@ -29,7 +29,8 @@ ollama pull gemma3:4b && ollama pull nomic-embed-text             # Ollama must 
 - On this branch the `chunks` table is created by `providers.get_vector_store()`; `src/rag/database/migrations/` is unused so far. Changing `METADATA_COLUMNS` or the embedding size needs the table dropped and documents re-ingested (`docker compose down -v` wipes the local DB).
 - Dependencies are declared in `pyproject.toml` (there is no requirements.txt), with optional groups `ollama`, `pgvector` and `dev`. Don't use `langchain-community` (discontinued); load files with `pypdf` and plain Python into `langchain_core` `Document`s.
 - Model backends and the vector store are built only in `src/rag/providers.py`; everything else uses LangChain's standard interfaces. Vector store = `langchain_postgres.PGVectorStore` (v2) on a table we define, with metadata as real columns (`METADATA_COLUMNS`) so filters are SQL; it connects via `asyncpg` (`async_database_url()`), never the deprecated `PGVector` class.
-- Local database: `docker compose up -d` → PostgreSQL 18 + pgvector on `127.0.0.1:5433` (user/db `rag`). Always write `127.0.0.1`, not `localhost`, in database URLs: on Windows `localhost` tries IPv6 `::1` first and stalls.
+- Local database: `docker compose up -d` → PostgreSQL 18 + pgvector on `127.0.0.1:5433` (user/db `rag`). Always write `127.0.0.1`, not `localhost`, in database and Ollama URLs: on Windows `localhost` tries IPv6 `::1` first and stalls (database) or adds ~2 s per call (Ollama via urllib).
+- Scripts run `rag.health.check_services()` first, so a stopped Docker/Ollama, a missing model or a bad `DATABASE_URL` ends with one clear line instead of a traceback.
 - Config comes from `.env` via `rag.config.get_settings()`; `.env.example` lists the keys and defaults. `documents/` holds client files and is git-ignored.
 
 ## Hosting (planned, not built)
