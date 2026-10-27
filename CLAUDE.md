@@ -11,7 +11,7 @@ Scaffold only: modules under `src/rag/` are docstring stubs. The database will b
 - src-layout package `rag` (`src/rag/`); import as `from rag.ingestion import ...`, never `from src...`. Pipeline: `ingestion/` (load → chunk → embed → store) → `database/` → `retrieval/` (vector + full-text) → `generation/` (prompt + LLM) → `api/`. `scripts/ingest.py` and `scripts/ask.py` are CLI entry points for testing the pipeline without the API.
 - Keep third-party frameworks (e.g. LangChain) inside these modules behind our own functions, so the API and tests don't depend on them.
 - Schema lives in `src/rag/database/migrations/NNN_*.sql` (numbered, applied in order). If LangChain's PGVector is adopted it manages its own tables — don't duplicate them.
-- Dependencies are declared in `pyproject.toml` (there is no requirements.txt). Setup: `pip install -e .`
+- Dependencies are declared in `pyproject.toml` (there is no requirements.txt), with optional groups `ollama` and `dev`. Setup: `.venv/Scripts/python.exe -m pip install -e ".[ollama,dev]"`. Don't use `langchain-community` (discontinued); load files with `pypdf` and plain Python into `langchain_core` `Document`s.
 - Config comes from `.env` via `rag.config.get_settings()`; `.env.example` lists the keys. `documents/` holds client files and is git-ignored.
 - Tests: `pytest` (unit only; integration tests are deselected by default) · `pytest -m integration` (needs the SSH tunnel to the DB) · single test: `pytest tests/unit/test_x.py::test_name`.
 

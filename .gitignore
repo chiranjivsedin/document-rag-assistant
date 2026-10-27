@@ -5,6 +5,7 @@ __pycache__/
 .env.*
 !.env.example
 .pytest_cache/
+*.egg-info/
 
 # Client documents (may be confidential) — never commit
 documents/
