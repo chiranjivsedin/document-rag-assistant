@@ -12,6 +12,7 @@ def test_defaults():
     assert (s.chunk_size, s.chunk_overlap) == (1000, 150)
     assert s.documents_dir == "documents"
     assert s.database_url is None
+    assert (s.vector_store, s.vector_table) == ("pgvector", "chunks")
 
 
 def test_overrides():
@@ -46,6 +47,17 @@ def test_unsupported_provider():
 def test_invalid_chunking(size, overlap):
     with pytest.raises(ValueError, match="CHUNK_"):
         get_settings({"CHUNK_SIZE": size, "CHUNK_OVERLAP": overlap})
+
+
+def test_unsupported_vector_store():
+    with pytest.raises(ValueError, match="VECTOR_STORE 'chroma' is not supported"):
+        get_settings({"VECTOR_STORE": "chroma"})
+
+
+@pytest.mark.parametrize("table", ["chunks; drop table x", "my chunks", "1chunks"])
+def test_vector_table_must_be_plain_name(table):
+    with pytest.raises(ValueError, match="VECTOR_TABLE must be a plain table name"):
+        get_settings({"VECTOR_TABLE": table})
 
 
 def test_reads_os_environment(monkeypatch):

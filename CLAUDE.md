@@ -12,6 +12,8 @@ Scaffold only: modules under `src/rag/` are docstring stubs. The database will b
 - Keep third-party frameworks (e.g. LangChain) inside these modules behind our own functions, so the API and tests don't depend on them.
 - Schema lives in `src/rag/database/migrations/NNN_*.sql` (numbered, applied in order). If LangChain's PGVector is adopted it manages its own tables — don't duplicate them.
 - Dependencies are declared in `pyproject.toml` (there is no requirements.txt), with optional groups `ollama` and `dev`. Setup: `.venv/Scripts/python.exe -m pip install -e ".[ollama,dev]"`. Don't use `langchain-community` (discontinued); load files with `pypdf` and plain Python into `langchain_core` `Document`s.
+- Model backends and the vector store are built only in `src/rag/providers.py`; everything else uses LangChain's standard interfaces. Vector store = `langchain_postgres.PGVectorStore` (v2) on a table we define, with metadata as real columns (`METADATA_COLUMNS`) so filters are SQL; it connects via `asyncpg` (`async_database_url()`), never the deprecated `PGVector` class.
+- Local database: `docker compose up -d` → PostgreSQL 18 + pgvector on `127.0.0.1:5433` (user/db `rag`). Always write `127.0.0.1`, not `localhost`, in database URLs: on Windows `localhost` tries IPv6 `::1` first and stalls.
 - Config comes from `.env` via `rag.config.get_settings()`; `.env.example` lists the keys. `documents/` holds client files and is git-ignored.
 - Tests: `pytest` (unit only; integration tests are deselected by default) · `pytest -m integration` (needs the SSH tunnel to the DB) · single test: `pytest tests/unit/test_x.py::test_name`.
 

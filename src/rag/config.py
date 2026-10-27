@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 SUPPORTED_PROVIDERS = {"ollama"}
+SUPPORTED_VECTOR_STORES = {"pgvector"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,8 @@ class Settings:
     chunk_overlap: int
     documents_dir: str
     database_url: str | None
+    vector_store: str
+    vector_table: str
 
 
 def get_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -38,6 +41,8 @@ def get_settings(env: Mapping[str, str] | None = None) -> Settings:
         chunk_overlap=_int(env, "CHUNK_OVERLAP", 150),
         documents_dir=env.get("DOCUMENTS_DIR", "documents"),
         database_url=env.get("DATABASE_URL") or None,
+        vector_store=env.get("VECTOR_STORE", "pgvector"),
+        vector_table=env.get("VECTOR_TABLE", "chunks"),
     )
     _validate(settings)
     return settings
@@ -57,6 +62,12 @@ def _validate(s: Settings) -> None:
     for name, provider in (("LLM_PROVIDER", s.llm_provider), ("EMBEDDING_PROVIDER", s.embedding_provider)):
         if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(f"{name} {provider!r} is not supported; use one of {sorted(SUPPORTED_PROVIDERS)}")
+    if s.vector_store not in SUPPORTED_VECTOR_STORES:
+        raise ValueError(
+            f"VECTOR_STORE {s.vector_store!r} is not supported; use one of {sorted(SUPPORTED_VECTOR_STORES)}"
+        )
+    if not s.vector_table.isidentifier():
+        raise ValueError(f"VECTOR_TABLE must be a plain table name, got {s.vector_table!r}")
     if s.chunk_size <= 0:
         raise ValueError("CHUNK_SIZE must be greater than 0")
     if not 0 <= s.chunk_overlap < s.chunk_size:

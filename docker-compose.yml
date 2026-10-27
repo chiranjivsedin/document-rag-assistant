@@ -1,0 +1,23 @@
+# Local development database: PostgreSQL 18 + pgvector (same major version as planned for hosting).
+# Start: docker compose up -d    Stop: docker compose down    Wipe data: docker compose down -v
+# Port 5433 so it never clashes with a PostgreSQL already using 5432 (e.g. an SSH tunnel to a hosting server).
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: rag-postgres
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD:-rag_local_dev}
+      POSTGRES_DB: rag
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - rag-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rag-pgdata:
