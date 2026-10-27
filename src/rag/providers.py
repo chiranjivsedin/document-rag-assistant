@@ -10,6 +10,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
 from rag.config import Settings
+from rag.database.connection import async_database_url
+from rag.database.repository import table_exists
 
 # Chunk metadata kept as real table columns, so retrieval can filter on them in SQL.
 METADATA_COLUMNS = {
@@ -53,7 +55,7 @@ def _pgvector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
         raise ValueError("DATABASE_URL is required when VECTOR_STORE is pgvector")
 
     engine = PGEngine.from_connection_string(url=async_database_url(settings.database_url))
-    if not _table_exists(settings.database_url, settings.vector_table):
+    if not table_exists(settings.database_url, settings.vector_table):
         engine.init_vectorstore_table(
             table_name=settings.vector_table,
             vector_size=len(embeddings.embed_query("dimension probe")),
@@ -65,20 +67,3 @@ def _pgvector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
         table_name=settings.vector_table,
         metadata_columns=list(METADATA_COLUMNS),
     )
-
-
-def async_database_url(url: str) -> str:
-    """postgresql://… → postgresql+asyncpg://… (PGEngine needs an async driver; asyncpg works on Windows)."""
-    scheme, sep, rest = url.partition("://")
-    if not sep:
-        raise ValueError("DATABASE_URL must look like postgresql://user:password@host:port/database")
-    return f"postgresql+asyncpg://{rest}" if scheme in ("postgresql", "postgres") else url
-
-
-def _table_exists(database_url: str, table: str) -> bool:
-    import psycopg
-
-    scheme, _, rest = database_url.partition("://")
-    plain_url = f"{scheme.split('+')[0]}://{rest}"  # psycopg takes no "+driver" suffix
-    with psycopg.connect(plain_url, connect_timeout=10) as conn:
-        return conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]
