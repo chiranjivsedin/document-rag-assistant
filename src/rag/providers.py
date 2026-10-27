@@ -29,7 +29,8 @@ def get_chat_model(settings: Settings) -> BaseChatModel:
     if settings.llm_provider == "ollama":
         from langchain_ollama import ChatOllama
 
-        return ChatOllama(model=settings.llm_model, base_url=settings.ollama_base_url)
+        # temperature 0: answers about documentation should be consistent, not creative
+        return ChatOllama(model=settings.llm_model, base_url=settings.ollama_base_url, temperature=0)
     raise ValueError(f"Unsupported LLM provider: {settings.llm_provider!r}")
 
 
