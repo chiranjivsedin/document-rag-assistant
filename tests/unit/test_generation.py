@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-from rag.generation.llm import answer
+from rag.generation.llm import answer, stream_answer
 from rag.generation.prompts import ANSWER_PROMPT, NO_ANSWER, format_context, source_label
 
 DOCS = [
@@ -55,3 +55,13 @@ def test_no_passages_means_no_model_call():
     assert result.text == NO_ANSWER
     assert result.sources == []
     assert model.seen == []
+
+
+def test_stream_answer_yields_the_reply_in_pieces():
+    pieces = list(stream_answer("What is deprecated?", DOCS, FakeListChatModel(responses=["Classic Desktop [1]."])))
+    assert len(pieces) > 1
+    assert "".join(pieces) == "Classic Desktop [1]."
+
+
+def test_stream_answer_with_no_passages_says_so():
+    assert list(stream_answer("Anything?", [], FakeListChatModel(responses=["unused"]))) == [NO_ANSWER]
