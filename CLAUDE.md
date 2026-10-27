@@ -4,18 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Scaffold only: modules under `src/rag/` are docstring stubs. The database will be PostgreSQL, possibly on an existing Azure VM reused for hosting (see below). Open decisions that shape the code: pgvector on the Windows server, embedding model (fixes the vector dimension), LLM provider, and whether LangChain is adopted.
+Branch `poc/langchain-ollama`: a working local prototype (LangChain + Ollama + pgvector in Docker), command-line only. `main` holds only the scaffold until the lead confirms requirements (VM, "16.2" product, mini DMS, hosting); then this branch is merged or redone. Not built yet: mini DMS, HTTP API/UI, Azure providers, hybrid (keyword) search, a relevance cut-off.
 
-## Layout and commands
+## Running the prototype (Windows, from the repo root)
 
-- src-layout package `rag` (`src/rag/`); import as `from rag.ingestion import ...`, never `from src...`. Pipeline: `ingestion/` (load → chunk → embed → store) → `database/` → `retrieval/` (vector + full-text) → `generation/` (prompt + LLM) → `api/`. `scripts/ingest.py` and `scripts/ask.py` are CLI entry points for testing the pipeline without the API.
-- Keep third-party frameworks (e.g. LangChain) inside these modules behind our own functions, so the API and tests don't depend on them.
-- Schema lives in `src/rag/database/migrations/NNN_*.sql` (numbered, applied in order). If LangChain's PGVector is adopted it manages its own tables — don't duplicate them.
-- Dependencies are declared in `pyproject.toml` (there is no requirements.txt), with optional groups `ollama` and `dev`. Setup: `.venv/Scripts/python.exe -m pip install -e ".[ollama,dev]"`. Don't use `langchain-community` (discontinued); load files with `pypdf` and plain Python into `langchain_core` `Document`s.
+```bash
+python -m venv .venv                                              # Python 3.14 works
+.venv/Scripts/python.exe -m pip install -e ".[ollama,pgvector,dev]"
+cp .env.example .env                                              # defaults work as-is locally
+docker compose up -d                                              # PostgreSQL 18 + pgvector on 127.0.0.1:5433
+ollama pull gemma3:4b && ollama pull nomic-embed-text             # Ollama must be running
+.venv/Scripts/python.exe scripts/ingest.py                        # index documents/ (re-run any time)
+.venv/Scripts/python.exe scripts/ask.py "What is deprecated?" --version 16.2   # optional --product, --k
+```
+
+- Put files at `documents/<product>/<version>/<doc_type>/<file>` (PDF, `.md`, `.txt`), e.g. `documents/documentum/16.2/release-notes/notes.pdf`; product/version/doc_type come from those folders. Re-running ingest skips unchanged files, replaces changed ones and removes deleted ones. Scanned PDFs (no text layer) are skipped.
+- On the 4-core laptop CPU, `gemma3:4b` takes ~15–30 s per answer; the first call after a while also loads the model.
+- Tests: `pytest` (unit only, no services needed) · `pytest -m integration` (needs Docker DB + Ollama; uses its own temporary tables) · single test: `pytest tests/unit/test_x.py::test_name`. Prefix with `.venv/Scripts/python.exe -m`. Add `-p no:warnings` to hide a harmless `langsmith` deprecation warning on Python 3.14.
+
+## Layout and conventions
+
+- src-layout package `rag` (`src/rag/`); import as `from rag.ingestion import ...`, never `from src...`. Flow: `ingestion/` (loaders → chunking → pipeline) → vector store → `retrieval/search.py` (vector search + product/version filter) → `generation/` (prompt + LLM, `[n]` citations, fixed "I don't know" reply). `scripts/ingest.py` and `scripts/ask.py` are the entry points; `api/` is still a stub.
+- Keep third-party frameworks (e.g. LangChain) inside these modules behind our own functions (`ingest()`, `retrieve()`, `answer()`), so scripts, a future API and tests don't depend on them. Unit tests use fakes (fake store, `FakeListChatModel`).
+- On this branch the `chunks` table is created by `providers.get_vector_store()`; `src/rag/database/migrations/` is unused so far. Changing `METADATA_COLUMNS` or the embedding size needs the table dropped and documents re-ingested (`docker compose down -v` wipes the local DB).
+- Dependencies are declared in `pyproject.toml` (there is no requirements.txt), with optional groups `ollama`, `pgvector` and `dev`. Don't use `langchain-community` (discontinued); load files with `pypdf` and plain Python into `langchain_core` `Document`s.
 - Model backends and the vector store are built only in `src/rag/providers.py`; everything else uses LangChain's standard interfaces. Vector store = `langchain_postgres.PGVectorStore` (v2) on a table we define, with metadata as real columns (`METADATA_COLUMNS`) so filters are SQL; it connects via `asyncpg` (`async_database_url()`), never the deprecated `PGVector` class.
 - Local database: `docker compose up -d` → PostgreSQL 18 + pgvector on `127.0.0.1:5433` (user/db `rag`). Always write `127.0.0.1`, not `localhost`, in database URLs: on Windows `localhost` tries IPv6 `::1` first and stalls.
-- Config comes from `.env` via `rag.config.get_settings()`; `.env.example` lists the keys. `documents/` holds client files and is git-ignored.
-- Tests: `pytest` (unit only; integration tests are deselected by default) · `pytest -m integration` (needs the SSH tunnel to the DB) · single test: `pytest tests/unit/test_x.py::test_name`.
+- Config comes from `.env` via `rag.config.get_settings()`; `.env.example` lists the keys and defaults. `documents/` holds client files and is git-ignored.
 
 ## Hosting (planned, not built)
 
