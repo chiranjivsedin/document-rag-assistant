@@ -1,0 +1,71 @@
+// Small fetch wrapper for the RAG API. URLs are relative: Vite's dev proxy (vite.config.ts) forwards them to uvicorn.
+
+import type { HealthResponse } from "./types";
+
+/** The API answered with an error status; `detail` is its message (or a summary of FastAPI's 422 field errors). */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+  ) {
+    super(`HTTP ${status}: ${detail}`);
+    this.name = "ApiError";
+  }
+}
+
+/** The API could not be reached at all (server not running, proxy failure, network down). */
+export class ApiUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super("Can't reach the API. Is it running on 127.0.0.1:8000?", { cause });
+    this.name = "ApiUnreachableError";
+  }
+}
+
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init);
+  } catch (error) {
+    throw new ApiUnreachableError(error);
+  }
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined; // e.g. the dev proxy's empty 502 when uvicorn is down
+  }
+}
+
+/** Turn an error body into one line: FastAPI uses {"detail": "..."}, or a list of field errors for 422. */
+export function errorDetail(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | undefined)?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item: { loc?: unknown[]; msg?: string }) => {
+        const field = item.loc?.filter((part) => part !== "body").join(".");
+        return field ? `${field}: ${item.msg}` : (item.msg ?? "invalid input");
+      })
+      .join("; ");
+  }
+  return `Request failed with status ${status}`;
+}
+
+/** GET /health. A 503 is a normal answer here (it lists the problems), so only other statuses throw. */
+export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
+  const response = await send("/health", { signal });
+  const body = await readJson(response);
+  if ((response.ok || response.status === 503) && isHealthResponse(body)) {
+    return body;
+  }
+  if (response.status >= 500 && body === undefined) {
+    throw new ApiUnreachableError(`proxy returned ${response.status} without a body`);
+  }
+  throw new ApiError(response.status, errorDetail(body, response.status));
+}
+
+function isHealthResponse(body: unknown): body is HealthResponse {
+  const value = body as HealthResponse | undefined;
+  return (value?.status === "ok" || value?.status === "unavailable") && Array.isArray(value.problems);
+}
