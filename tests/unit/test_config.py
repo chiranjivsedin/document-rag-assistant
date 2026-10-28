@@ -13,6 +13,12 @@ def test_defaults():
     assert s.documents_dir == "documents"
     assert s.database_url is None
     assert (s.vector_store, s.vector_table) == ("pgvector", "chunks")
+    assert s.api_cors_origins == ("http://localhost:5173",)
+
+
+def test_cors_origins_are_a_comma_separated_list():
+    s = get_settings({"API_CORS_ORIGINS": " http://localhost:5173, https://dms.example.com ,"})
+    assert s.api_cors_origins == ("http://localhost:5173", "https://dms.example.com")
 
 
 def test_overrides():

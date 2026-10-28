@@ -23,6 +23,7 @@ class Settings:
     database_url: str | None
     vector_store: str
     vector_table: str
+    api_cors_origins: tuple[str, ...]  # browser origins allowed to call the HTTP API
 
 
 def get_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -43,6 +44,7 @@ def get_settings(env: Mapping[str, str] | None = None) -> Settings:
         database_url=env.get("DATABASE_URL") or None,
         vector_store=env.get("VECTOR_STORE", "pgvector"),
         vector_table=env.get("VECTOR_TABLE", "chunks"),
+        api_cors_origins=_list(env.get("API_CORS_ORIGINS") or "http://localhost:5173"),
     )
     _validate(settings)
     return settings
@@ -56,6 +58,11 @@ def _int(env: Mapping[str, str], name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         raise ValueError(f"{name} must be a whole number, got {raw!r}") from None
+
+
+def _list(raw: str) -> tuple[str, ...]:
+    """Comma-separated values, trimmed, empty items dropped."""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 def _validate(s: Settings) -> None:
