@@ -1,3 +1,7 @@
+import threading
+import time
+from pathlib import Path
+
 import httpx
 import ollama
 import psycopg
@@ -10,6 +14,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rag.api import app as api
 from rag.config import get_settings
 from rag.generation.prompts import NO_ANSWER
+from rag.ingestion.pipeline import IngestReport
 from rag.service import Services
 
 SETTINGS = get_settings({
@@ -96,7 +101,9 @@ def test_health_reports_problems_with_503(client, checks):
 # --- app skeleton ------------------------------------------------------------------------------
 
 def test_exposed_endpoints(client):
-    assert set(client.get("/openapi.json").json()["paths"]) == {"/health", "/chat"}
+    assert set(client.get("/openapi.json").json()["paths"]) == {
+        "/health", "/chat", "/documents/ingest", "/documents/ingest/{job_id}",
+    }
     assert client.get("/docs").status_code == 200
 
 
@@ -300,3 +307,189 @@ def test_a_failed_build_is_retried_on_the_next_request(checks, monkeypatch):
     assert client.post("/chat", json={"question": "Q?"}).status_code == 503
     assert client.post("/chat", json={"question": "Q?"}).status_code == 200
     assert len(attempts) == 2
+
+
+# --- POST /documents/ingest and GET /documents/ingest/{job_id} ---------------------------------
+
+REPORT = IngestReport(added=["acme/2.0/release-notes/notes.md"], updated=["acme/1.0/release-notes/notes.md"],
+                      unchanged=["acme/1.0/deprecated-features/list.md"], removed=["acme/0.9/old.md"],
+                      no_text=["acme/2.0/scan.pdf"], chunks_stored=4)
+EMBEDDING_MODEL_MISSING = ollama.ResponseError('{"error": "model nomic-embed-text not found"}', 404)
+
+
+class FakeIngest:
+    """Stand-in for rag.service.run_ingest; can hold a job 'running' until released."""
+
+    def __init__(self, result=REPORT, hold=False):
+        self.result = result
+        self.calls = []
+        self.release = threading.Event()
+        if not hold:
+            self.release.set()
+
+    def __call__(self, services, documents_dir):
+        self.calls.append((services, documents_dir))
+        self.release.wait(timeout=5)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+@pytest.fixture
+def docs_settings(tmp_path):
+    return get_settings({"DATABASE_URL": "postgresql://rag:secret@127.0.0.1:5433/rag", "DOCUMENTS_DIR": str(tmp_path)})
+
+
+def ingest_client(settings, monkeypatch, fake):
+    monkeypatch.setattr(api, "run_ingest", fake)
+    services = Services(settings=settings, store=FakeStore([]), chat_model=None)
+    return TestClient(api.create_app(settings, services=services), raise_server_exceptions=False), services
+
+
+def wait_until_finished(client, job_id, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        body = client.get(f"/documents/ingest/{job_id}").json()
+        if body["status"] != "running" or time.monotonic() > deadline:
+            return body
+        time.sleep(0.01)
+
+
+def test_ingest_starts_a_job_and_reports_success(checks, docs_settings, monkeypatch):
+    fake = FakeIngest()
+    client, services = ingest_client(docs_settings, monkeypatch, fake)
+    response = client.post("/documents/ingest")
+    assert response.status_code == 202
+    started = response.json()
+    assert started["status"] == "running"
+    assert response.headers["location"] == f"/documents/ingest/{started['job_id']}"
+
+    body = wait_until_finished(client, started["job_id"])
+    assert body["status"] == "succeeded"
+    assert body["error"] is None
+    assert body["finished_at"] >= body["started_at"]
+    assert body["report"] == {
+        "added": ["acme/2.0/release-notes/notes.md"], "updated": ["acme/1.0/release-notes/notes.md"],
+        "unchanged": ["acme/1.0/deprecated-features/list.md"], "removed": ["acme/0.9/old.md"],
+        "no_text": ["acme/2.0/scan.pdf"], "chunks_stored": 4,
+    }
+    assert fake.calls == [(services, Path(docs_settings.documents_dir))]
+    assert checks.calls == [(docs_settings, False)]  # ingest needs only the embedding model, as for ingest.py
+
+
+def test_polling_shows_running_until_the_job_finishes(checks, docs_settings, monkeypatch):
+    fake = FakeIngest(hold=True)
+    client, _ = ingest_client(docs_settings, monkeypatch, fake)
+    job_id = client.post("/documents/ingest").json()["job_id"]
+    running = client.get(f"/documents/ingest/{job_id}").json()
+    assert running["status"] == "running"
+    assert running["finished_at"] is None and running["report"] is None and running["error"] is None
+    fake.release.set()
+    assert wait_until_finished(client, job_id)["status"] == "succeeded"
+
+
+def test_second_ingest_while_one_runs_is_409(checks, docs_settings, monkeypatch):
+    fake = FakeIngest(hold=True)
+    client, _ = ingest_client(docs_settings, monkeypatch, fake)
+    first = client.post("/documents/ingest").json()["job_id"]
+    conflict = client.post("/documents/ingest")
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "An ingestion job is already running.", "job_id": first}
+
+    fake.release.set()
+    wait_until_finished(client, first)
+    again = client.post("/documents/ingest")
+    assert again.status_code == 202
+    assert again.json()["job_id"] != first
+    assert len(fake.calls) == 2
+
+
+def test_concurrent_ingest_requests_start_one_job(checks, docs_settings, monkeypatch):
+    fake = FakeIngest(hold=True)
+    client, _ = ingest_client(docs_settings, monkeypatch, fake)
+    barrier = threading.Barrier(8)
+    statuses = []
+
+    def post():
+        barrier.wait()  # all requests arrive at the same moment
+        statuses.append(client.post("/documents/ingest").status_code)
+
+    threads = [threading.Thread(target=post) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    fake.release.set()
+    assert sorted(statuses) == [202] + [409] * 7
+    assert len(fake.calls) == 1
+
+
+UNAVAILABLE = "Ollama or the database stopped responding. Check GET /health."
+
+
+@pytest.mark.parametrize("error, message", [
+    (ConnectionError("Failed to connect to Ollama."), UNAVAILABLE),
+    (psycopg.OperationalError("password secret rejected"), UNAVAILABLE),
+    (EMBEDDING_MODEL_MISSING, "The model service failed: model nomic-embed-text not found"),
+    (RuntimeError("bug near postgresql://rag:secret@db"), "Ingestion failed unexpectedly; see the server log."),
+])
+def test_failed_job_reports_a_safe_message(checks, docs_settings, monkeypatch, error, message):
+    client, _ = ingest_client(docs_settings, monkeypatch, FakeIngest(result=error))
+    job_id = client.post("/documents/ingest").json()["job_id"]
+    body = wait_until_finished(client, job_id)
+    assert body["status"] == "failed"
+    assert body["error"] == message
+    assert body["report"] is None and body["finished_at"] is not None
+    assert "secret" not in client.get(f"/documents/ingest/{job_id}").text
+    assert client.post("/documents/ingest").status_code == 202  # a failed job doesn't block the next one
+
+
+def test_ingest_503_when_services_are_down(checks, docs_settings, monkeypatch):
+    checks.problems = [OLLAMA_DOWN]
+    fake = FakeIngest()
+    client, _ = ingest_client(docs_settings, monkeypatch, fake)
+    response = client.post("/documents/ingest")
+    assert response.status_code == 503
+    assert response.json() == {"detail": OLLAMA_DOWN}
+    assert fake.calls == []
+    checks.problems = []
+    assert client.post("/documents/ingest").status_code == 202  # no job was left behind
+
+
+def test_ingest_500_when_documents_folder_is_missing(checks, tmp_path, monkeypatch):
+    settings = get_settings({"DOCUMENTS_DIR": str(tmp_path / "missing")})
+    fake = FakeIngest()
+    client, _ = ingest_client(settings, monkeypatch, fake)
+    response = client.post("/documents/ingest")
+    assert response.status_code == 500
+    assert response.json() == {"detail": "The documents folder (DOCUMENTS_DIR) doesn't exist on the server."}
+    assert fake.calls == []
+
+
+def test_ingest_only_uses_the_configured_folder(checks, docs_settings, monkeypatch):
+    fake = FakeIngest()
+    client, _ = ingest_client(docs_settings, monkeypatch, fake)
+    response = client.post("/documents/ingest?documents_dir=C:/Windows", json={"documents_dir": "C:/Windows"})
+    wait_until_finished(client, response.json()["job_id"])
+    assert [documents_dir for _, documents_dir in fake.calls] == [Path(docs_settings.documents_dir)]
+
+
+def test_unknown_job_is_404(client):
+    response = client.get("/documents/ingest/no-such-job")
+    assert response.status_code == 404
+    assert response.json()["detail"].startswith("Unknown ingestion job.")
+
+
+def test_ingest_builds_services_lazily(checks, docs_settings, monkeypatch):
+    builds = []
+
+    def build(settings):
+        builds.append(settings)
+        return Services(settings=settings, store=FakeStore([]), chat_model=None)
+
+    monkeypatch.setattr(api, "build_services", build)
+    monkeypatch.setattr(api, "run_ingest", FakeIngest())
+    client = TestClient(api.create_app(docs_settings))
+    assert builds == []
+    wait_until_finished(client, client.post("/documents/ingest").json()["job_id"])
+    assert builds == [docs_settings]

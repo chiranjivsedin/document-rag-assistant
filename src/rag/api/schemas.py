@@ -1,5 +1,6 @@
 """Request and response bodies of the HTTP API; FastAPI also publishes them in its OpenAPI schema."""
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -45,3 +46,28 @@ class ChatResponse(BaseModel):
     sources: list[ChatSource]  # empty when no_answer is true
     model: str
     elapsed_ms: int
+
+
+class IngestReportBody(BaseModel):
+    """What one ingestion run did; each list holds paths relative to the documents folder."""
+
+    added: list[str]
+    updated: list[str]
+    unchanged: list[str]
+    removed: list[str]
+    no_text: list[str] = Field(description="Files with no extractable text (e.g. scanned PDFs), skipped")
+    chunks_stored: int
+
+
+class IngestJobResponse(BaseModel):
+    job_id: str
+    status: Literal["running", "succeeded", "failed"]
+    started_at: datetime
+    finished_at: datetime | None
+    report: IngestReportBody | None = Field(description="Set when status is succeeded")
+    error: str | None = Field(description="Set when status is failed")
+
+
+class IngestConflictResponse(BaseModel):
+    detail: str
+    job_id: str = Field(description="The job that is already running")
