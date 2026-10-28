@@ -1,8 +1,8 @@
 # Running the prototype manually on Windows
 
-A step-by-step guide to running the local RAG prototype (branch `poc/langchain-ollama`) by hand, with what each command does. For how the pieces fit together, see [langchain-ollama-rag-architecture.md](langchain-ollama-rag-architecture.md).
+A step-by-step guide to running the local RAG prototype (branch `feature/rest-api`) by hand, with what each command does: the command-line scripts and the HTTP API. For how the pieces fit together, see [langchain-ollama-rag-architecture.md](langchain-ollama-rag-architecture.md).
 
-Commands are written for **PowerShell**. Steps 1–4 are one-time setup; after that you only need steps 5–9.
+Commands are written for **PowerShell**. Steps 1–4 are one-time setup; after that you only need steps 5–11.
 
 ## Before you start: three programs
 
@@ -16,23 +16,24 @@ Commands are written for **PowerShell**. Steps 1–4 are one-time setup; after t
 
 ```powershell
 cd <path-to-your-clone>\RAG
-git switch poc/langchain-ollama
+git switch feature/rest-api
 ```
 
 - `cd` moves into the project folder. Every later command assumes you are here.
-- `git switch` selects the branch with the working prototype. `main` only has the empty scaffold.
+- `git switch` selects the branch with the prototype and its HTTP API. (`poc/langchain-ollama` has the scripts without the API; `main` only has the empty scaffold.)
 
 ## 2. Create the Python environment (one-time)
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[ollama,pgvector,dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[ollama,pgvector,dev,api]"
 ```
 
 - `python -m venv .venv` creates a private Python environment in the `.venv` folder, so this project's packages don't mix with other projects. Skip it if `.venv` already exists.
-- `pip install -e ".[ollama,pgvector,dev]"` installs the app and its libraries:
+- `pip install -e ".[ollama,pgvector,dev,api]"` installs the app and its libraries:
   - `-e` means "editable": your code changes take effect without reinstalling.
-  - `[ollama,pgvector,dev]` adds the optional groups: the Ollama connection, the PostgreSQL vector store, and pytest for tests.
+  - `[ollama,pgvector,dev,api]` adds the optional groups: the Ollama connection, the PostgreSQL vector store, pytest and httpx for tests, and FastAPI and uvicorn for the HTTP API.
+  - If you installed before the API existed, run this line again to add the `api` group.
 
 Every command calls `.\.venv\Scripts\python.exe` directly, so you never need to "activate" the environment. That avoids PowerShell's script-permission errors.
 
@@ -109,9 +110,44 @@ Then:
 - **Time:** expect 15–40 seconds per answer on a laptop CPU, and up to a minute for the first one while the model loads.
 - **Unanswerable questions:** if the documents don't contain the answer, it replies `I don't know based on the available documents.`
 
-## 8. If something isn't running
+## 8. Run the HTTP API (optional)
 
-Both scripts check the services first and stop with one clear line instead of a long error:
+The API does the same as steps 6 and 7, but over HTTP, so other programs (later a React UI or the mini DMS) can use it. Docker and Ollama must be running as in step 5.
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
+```
+
+- `uvicorn` is the web server; `rag.api.app:app` points it at the FastAPI app in `src\rag\api\app.py`.
+- `--host 127.0.0.1` accepts connections only from your own machine. The API has no login, so keep it that way.
+- `--port 8000` is the port: the API is at `http://127.0.0.1:8000`.
+- Start it from the project folder: `DOCUMENTS_DIR` (default `documents`) is looked up from where you start it.
+- The window stays busy while the server runs and shows one line per request. Press **Ctrl+C** to stop it.
+
+Open **http://127.0.0.1:8000/docs** in a browser to see every endpoint and try it ("Try it out", then "Execute"). From a second PowerShell window you can also call it directly:
+
+```powershell
+# Are Ollama and the database reachable? (status "ok", or an error listing the problems)
+Invoke-RestMethod http://127.0.0.1:8000/health
+
+# Ask a question (same filters as ask.py)
+$body = @{ question = "Which features are deprecated?"; version = "1.0" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/chat -ContentType "application/json" -Body $body
+
+# Index documents\ in the background, then check on the job until its status is no longer "running"
+$job = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/documents/ingest
+Invoke-RestMethod "http://127.0.0.1:8000/documents/ingest/$($job.job_id)"
+```
+
+- **`/health`** returns `status`, the two model names and a list of `problems` (empty when all is well).
+- **`/chat`** takes `question` (required), `product`, `version` and `k` (1–20, default 5). It returns `answer`, `no_answer` (true for "I don't know"), and `sources`, each with a `number` matching the `[n]` in the answer and a short `excerpt`. The whole answer arrives at once, after the same 15–40 seconds.
+- **`/documents/ingest`** always indexes `DOCUMENTS_DIR`; it doesn't take a folder from the request. It answers straight away with a `job_id`. Checking that job shows `running`, then `succeeded` with the same counts `ingest.py` prints, or `failed` with a reason. Only one job runs at a time: starting a second one returns an error naming the running job.
+- **Job history is kept in memory only.** After you stop or restart the server, old job ids are unknown (404), and a job that was running when you stopped it never finishes. Files it had already indexed stay indexed; run ingestion again to finish the rest.
+- **Errors** come back as `{"detail": "..."}` and PowerShell shows them in red: 422 for a bad request (for example `k` above 20), 503 when Ollama or the database is down (same messages as step 9 below), 502 when the model itself fails (for example not enough memory), 500 for anything unexpected.
+
+## 9. If something isn't running
+
+Both scripts check the services first and stop with one clear line instead of a long error (the API returns the same lines with status 503):
 
 | Message starts with | Meaning | Fix |
 |---|---|---|
@@ -126,28 +162,29 @@ Fix what it names and run the command again.
 
 Always write `127.0.0.1`, not `localhost`, in `.env` URLs: on Windows `localhost` tries IPv6 first, which stalls the database connection and slows down Ollama calls.
 
-## 9. Run the tests (optional)
+## 10. Run the tests (optional)
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -p no:warnings
 .\.venv\Scripts\python.exe -m pytest -m integration -p no:warnings
 ```
 
-- The first runs the **unit tests**. They use stand-ins, so Docker and Ollama aren't needed, and they take a few seconds.
-- The second runs the **integration tests** against the real database and Ollama, in about 30–60 seconds. They use their own temporary tables, so your indexed data isn't touched.
+- The first runs the **unit tests**, including the API's. They use stand-ins, so Docker and Ollama aren't needed, and they take a few seconds. Integration tests are skipped in this run.
+- The second runs only the **integration tests** against the real database and Ollama. Expect a few minutes, mostly waiting for answers. They use their own temporary tables (and, for the API test, their own temporary documents folder), so your indexed data isn't touched. If Docker or Ollama isn't running, they fail rather than skip.
 - `-p no:warnings` hides a harmless warning from a LangChain dependency on Python 3.14.
 - To run one test: `.\.venv\Scripts\python.exe -m pytest tests\unit\test_chunking.py::<test_name>`.
 
-## 10. When you're done
+## 11. When you're done
 
 ```powershell
 docker compose down
 ```
 
+- If the API is running, stop it first with **Ctrl+C** in its window.
 - This stops the database and frees memory. Your indexed data is kept.
 - `docker compose down -v` would delete the data too, and you'd need to re-run step 6.
 - You can quit Ollama from its tray icon.
 
 ## Day to day
 
-Start Docker Desktop and Ollama, run `docker compose up -d`, then use `ingest.py` and `ask.py` as needed. Run `docker compose down` when finished.
+Start Docker Desktop and Ollama, run `docker compose up -d`, then use `ingest.py` and `ask.py`, or start the API, as needed. Run `docker compose down` when finished.

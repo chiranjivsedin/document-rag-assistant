@@ -28,5 +28,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--import-mode=importlib -m 'not integration'"
 markers = [
-    "integration: needs a live database and Ollama (run with: pytest -m integration)",
+    "integration: needs the local Docker database (docker compose up -d) and Ollama with both models (run with: pytest -m integration)",
 ]

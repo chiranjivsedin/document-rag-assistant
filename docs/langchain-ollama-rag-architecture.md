@@ -2,7 +2,7 @@
 
 A guide for developers new to this codebase: how a question becomes a cited answer, which file does what, and how to run it on your own machine.
 
-> **Scope.** This describes the `poc/langchain-ollama` branch. It is a **local, command-line prototype**: two scripts, a PostgreSQL database in Docker, and models served by Ollama on your laptop. There is no web API, UI, user login or cloud deployment yet (see [Missing or incomplete parts](#11-missing-or-incomplete-parts)). Everything below is taken from the code on this branch.
+> **Scope.** This describes the `feature/rest-api` branch (built on `poc/langchain-ollama`). It is a **local prototype**: two command-line scripts and a small HTTP API (FastAPI) over the same functions, a PostgreSQL database in Docker, and models served by Ollama on your laptop. There is no UI, user login, document upload or cloud deployment yet (see [Missing or incomplete parts](#12-missing-or-incomplete-parts)). Everything below is taken from the code on this branch.
 
 ---
 
@@ -13,11 +13,13 @@ RAG (retrieval-augmented generation) answers questions **from your own documents
 1. **Indexing** (`scripts/ingest.py`): read every file in `documents/`, cut the text into small chunks, turn each chunk into an *embedding* (a list of 768 numbers that captures its meaning), and store chunk + embedding in PostgreSQL.
 2. **Answering** (`scripts/ask.py`): turn the question into an embedding, find the stored chunks with the closest meaning, give those chunks to a chat model with strict instructions ("answer only from these passages and cite them"), and print the answer with its sources.
 
+The HTTP API runs the same two phases for other programs (a future React UI or the mini DMS): `POST /documents/ingest` and `POST /chat` (see [section 7](#7-http-api)).
+
 ---
 
 ## 2. End-to-end flowchart
 
-Solid arrows are the order of steps; dotted arrows are calls to the Ollama model server. Each box names the function and file that does the work.
+Solid arrows are the order of steps; dotted arrows are calls to the Ollama model server. Each box names the function and file that does the work. The scripts reach these steps through `service.py` (`build_services()`, `run_ingest()`); the HTTP API runs the same steps (section 7).
 
 ```mermaid
 flowchart TD
@@ -25,7 +27,7 @@ flowchart TD
         direction TB
         I1["Load settings<br/>config.get_settings()"] --> I2["Check services are up<br/>health.check_services()"]
         I2 --> I3["Connect to vector store<br/>(creates table on first run)<br/>providers.get_vector_store()"]
-        I3 --> I4["Look up already-indexed files<br/>repository.indexed_files()"]
+        I3 --> I4["Look up already-indexed files<br/>database.indexed_files()"]
         I4 --> I5["List files in documents/<br/>loaders.iter_files()"]
         I5 --> I6{"New or changed file,<br/>or new embedding model?"}
         I6 -->|no| I6a["Skip (unchanged)"]
@@ -77,8 +79,12 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | **Retrieval** | Finds the closest chunks to a question, with optional product/version filter, and attaches each chunk's distance | `src/rag/retrieval/search.py` |
 | **Prompt** | The instructions to the model and the numbered, labelled context | `src/rag/generation/prompts.py` |
 | **Answer generation** | LCEL chain that sends the prompt to the chat model and returns plain text, whole or streamed | `src/rag/generation/llm.py` |
+| **Shared service layer** | The glue every entry point uses: build the store and chat model once (`build_services()`), run an ingest against what is already stored (`run_ingest()`), answer a question (`ask()`), and decide which sources to show (`sources_to_show()`) | `src/rag/service.py` |
 | **Indexing entry point** | Command-line script for phase 1 | `scripts/ingest.py` |
 | **Answering entry point** | Command-line script for phase 2 | `scripts/ask.py` |
+| **HTTP API** | FastAPI app: `/health`, `/chat`, `/documents/ingest`, error mapping, CORS; builds the services on first use | `src/rag/api/app.py` |
+| **API schemas** | Request and response bodies (Pydantic), also published at `/docs` | `src/rag/api/schemas.py` |
+| **Ingestion jobs** | In-memory registry of background ingestion jobs: one at a time, guarded by a lock | `src/rag/api/jobs.py` |
 | **Local database** | PostgreSQL 18 with the pgvector extension, in Docker | `docker-compose.yml` |
 
 ---
@@ -101,7 +107,8 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | Chat model | `langchain-ollama` (`ChatOllama`) → Ollama → **`gemma3:4b`** | Temperature 0 for consistent answers |
 | Output | `langchain-core` (`StrOutputParser`) | Plain text; no structured/JSON output |
 | Model server | **Ollama** (tested with 0.24) on `http://127.0.0.1:11434` | Runs on the CPU on a typical laptop |
-| Tests | `pytest` | Unit tests use fakes; integration tests use real Docker + Ollama |
+| HTTP API | **FastAPI** (validation with **Pydantic**), served by **uvicorn** | Plain `def` endpoints, run in a thread pool |
+| Tests | `pytest`, FastAPI `TestClient` (needs `httpx`) | Unit tests use fakes; integration tests use real Docker + Ollama |
 
 Tested with Python 3.14; `pyproject.toml` declares Python 3.10 or newer.
 
@@ -142,7 +149,7 @@ A file placed higher up still works; the missing levels are simply empty (`None`
 
 ### 5.4 Decide what to do with each file (`pipeline.py`)
 
-`ingest()` compares each file with what is already stored (`repository.indexed_files()` returns, per `source`, its `file_hash` and `embedding_model`):
+`ingest()` compares each file with what is already stored (`database.indexed_files()` returns, per `source`, its `file_hash` and `embedding_model`):
 
 | Situation | Action | Reported as |
 |---|---|---|
@@ -211,7 +218,7 @@ ANSWER_PROMPT | chat_model | StrOutputParser()
 ```
 
 - `stream_answer()` (used by `ask.py`) yields the answer piece by piece as `gemma3:4b` writes it, so the text appears gradually.
-- `answer()` returns the whole text at once, as an `Answer(text, sources)` (used by tests; available for a future API).
+- `answer()` returns the whole text at once, as an `Answer(text, sources)`. `service.ask()` uses it, and `POST /chat` calls `service.ask()`.
 - If retrieval found **no chunks** (for example a version with no documents), both return the fixed "I don't know…" reply **without calling the model**.
 
 ### 6.4 Return the sources (`ask.py`)
@@ -226,11 +233,122 @@ Sources:
   [2] acme-dms/1.0/release-notes/release-notes.md, version 1.0  (distance 0.506)
 ```
 
-The list is hidden when the answer is the "I don't know" reply. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
+The list is hidden when the answer is the "I don't know" reply; that rule lives in `service.sources_to_show()`, so `POST /chat` applies it too. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
 
 ---
 
-## 7. Configuration
+## 7. HTTP API
+
+`src/rag/api/app.py` exposes both phases over HTTP with **FastAPI**, for a future React UI or the mini DMS. It adds no RAG logic of its own: every endpoint calls `rag.health.check_services()` and the functions in `rag/service.py`, exactly like the scripts.
+
+Start it from the repository root (with Docker and Ollama running, for real answers):
+
+```bash
+.venv/Scripts/python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
+```
+
+Interactive documentation (try every endpoint from the browser) is at `http://127.0.0.1:8000/docs`; the machine-readable schema at `/openapi.json`. Stop the server with Ctrl+C.
+
+| Endpoint | What it does | Success |
+|---|---|---|
+| `GET /health` | Checks Ollama (both models) and the database | 200 `ok`, or 503 `unavailable` with `problems` |
+| `POST /chat` | Answers a question from the indexed documents | 200 with the answer and sources |
+| `POST /documents/ingest` | Starts indexing `DOCUMENTS_DIR` in a background job | 202 with a `job_id` |
+| `GET /documents/ingest/{job_id}` | Reports a job: `running`, `succeeded` (with its report) or `failed` (with a reason) | 200 |
+
+### 7.1 Health
+
+```json
+GET /health  →  200
+{"status": "ok", "llm_model": "gemma3:4b", "embedding_model": "nomic-embed-text", "problems": []}
+
+GET /health  →  503
+{"status": "unavailable", "llm_model": "gemma3:4b", "embedding_model": "nomic-embed-text",
+ "problems": ["Can't reach Ollama at http://127.0.0.1:11434. Is it running? Start Ollama, or check OLLAMA_BASE_URL."]}
+```
+
+The problem messages are the same lines the scripts print. When the database is down, the answer takes about 12 s, because the database check waits 10 s before giving up.
+
+### 7.2 Chat
+
+```json
+POST /chat
+{"question": "How much RAM does the server need?", "product": "acme-dms", "version": "2.0", "k": 5}
+
+→ 200
+{"answer": "The server needs at least 16 GB of RAM [1].",
+ "no_answer": false,
+ "sources": [{"number": 1, "source": "acme-dms/2.0/release-notes/release-notes.md", "product": "acme-dms",
+              "version": "2.0", "doc_type": "release-notes", "page": null,
+              "distance": 0.31, "excerpt": "System requirements: …"}],
+ "model": "gemma3:4b", "elapsed_ms": 18450}
+```
+
+(Illustrative values.) Rules, as implemented in `schemas.py`:
+
+- `question` is required, 1–2000 characters after trimming spaces.
+- `product` and `version` are optional filters (at most 100 characters); an empty value means "no filter".
+- `k` is the number of passages to retrieve, 1–20, default 5.
+- Unknown fields are rejected, so a misspelt filter such as `versoin` fails with 422 instead of being ignored.
+- `sources[n].number` matches the `[n]` citations in `answer`. `excerpt` is the first 300 characters of the passage.
+- When the documents don't contain the answer, `answer` is "I don't know based on the available documents.", `no_answer` is `true` and `sources` is empty. If nothing matches the filters, this reply comes back without calling the model.
+
+The whole answer arrives at once (about 15–40 s on a laptop CPU); there is no streaming endpoint yet.
+
+### 7.3 Ingestion jobs
+
+Indexing can take minutes, so it runs in the background. The request takes **no input**: the folder always comes from `DOCUMENTS_DIR`, never from the request.
+
+```json
+POST /documents/ingest  →  202   (header  Location: /documents/ingest/3f9c…)
+{"job_id": "3f9c…", "status": "running", "started_at": "2026-10-28T10:15:02Z",
+ "finished_at": null, "report": null, "error": null}
+
+POST /documents/ingest  →  409   (while a job is running)
+{"detail": "An ingestion job is already running.", "job_id": "3f9c…"}
+
+GET /documents/ingest/3f9c…  →  200
+{"job_id": "3f9c…", "status": "succeeded", "started_at": "…", "finished_at": "…",
+ "report": {"added": ["acme-dms/2.0/release-notes/release-notes.md"], "updated": [], "unchanged": [],
+            "removed": [], "no_text": [], "chunks_stored": 1},
+ "error": null}
+```
+
+A failed job has `"status": "failed"`, `report: null` and a client-safe `error`: "Ollama or the database stopped responding. Check GET /health.", "The model service failed: <Ollama's reason>", or "Ingestion failed unexpectedly; see the server log.". Files indexed before the failure stay indexed; the next run picks up the rest. An unknown `job_id` returns 404.
+
+**Limitations of the job registry** (`api/jobs.py`):
+
+- Jobs are kept **in the server's memory**. Their history is **lost when the server restarts**, and a job interrupted by a restart is never marked failed.
+- Each uvicorn worker process would keep its own registry, so run the API as **one worker** (the default). A shared deployment needs a database table or a queue instead.
+- Only one job runs at a time; one lock guards all job state, so simultaneous requests cannot start two jobs. Only the 50 most recent finished jobs are kept.
+
+### 7.4 Errors
+
+Every error body is `{"detail": "..."}` (422 has FastAPI's list of field errors instead).
+
+| Status | When | Example `detail` |
+|---|---|---|
+| 422 | Invalid request body | Field-by-field validation errors |
+| 404 | Unknown ingestion `job_id` | "Unknown ingestion job. Job history is kept in memory and is lost when the server restarts." |
+| 409 | An ingestion job is already running | "An ingestion job is already running." (plus its `job_id`) |
+| 503 | The service check fails | The problem lines from `check_services()`, joined |
+| 503 | Ollama or the database drops during a request | "Ollama or the database stopped responding. Check GET /health." |
+| 502 | The model service answers with an error (e.g. not enough memory) | "The model service failed: model requires more system memory …" |
+| 500 | `DOCUMENTS_DIR` doesn't exist (ingest) | "The documents folder (DOCUMENTS_DIR) doesn't exist on the server." |
+| 500 | Anything unexpected | "Internal server error." (details only in the server log) |
+
+Which exceptions count as "unavailable" and which as "model failed" is decided in `providers.unavailable_errors()` and `providers.model_errors()`, so the API never imports Ollama or SQLAlchemy itself.
+
+### 7.5 Design notes
+
+- **Plain `def` endpoints.** FastAPI runs them in a thread pool, so a slow answer doesn't block other requests, and the vector store's synchronous calls work as they do in the scripts.
+- **Services built on first use.** The vector store and models are created by the first `/chat` or ingestion job and then reused. The server therefore starts, and `/health` answers, while Docker or Ollama is down; a failed build is retried by the next request.
+- **CORS.** Browsers may call the API from the origins in `API_CORS_ORIGINS` (default `http://localhost:5173`, the usual React dev server).
+- **No authentication.** Anyone who can reach the API can use every endpoint, so start it on `127.0.0.1` (as above), which only accepts connections from your own machine.
+
+---
+
+## 8. Configuration
 
 Settings come from `.env` (copy `.env.example`) or from environment variables; real environment variables take precedence. All have defaults, so a copied `.env.example` works as-is locally.
 
@@ -243,18 +361,19 @@ Settings come from `.env` (copy `.env.example`) or from environment variables; r
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Where Ollama listens |
 | `CHUNK_SIZE` | `1000` | Maximum characters per chunk |
 | `CHUNK_OVERLAP` | `150` | Characters repeated between neighbouring chunks (must be smaller than `CHUNK_SIZE`) |
-| `DOCUMENTS_DIR` | `documents` | Folder that `ingest.py` reads (can also be passed with `--documents-dir`) |
+| `DOCUMENTS_DIR` | `documents` | Folder that `ingest.py` reads (can also be passed with `--documents-dir`) and the only folder `POST /documents/ingest` reads. Relative paths are resolved from the folder the script or server is started in |
 | `VECTOR_STORE` | `pgvector` | Only `pgvector` is supported |
 | `VECTOR_TABLE` | `chunks` | Table name (letters, digits and `_` only) |
 | `DATABASE_URL` | none (required) | `.env.example` points it at the local Docker database: `postgresql://rag:…@127.0.0.1:5433/rag` |
+| `API_CORS_ORIGINS` | `http://localhost:5173` | Browser origins allowed to call the HTTP API, comma-separated |
 
-> **Use `127.0.0.1`, not `localhost`,** in `DATABASE_URL` and `OLLAMA_BASE_URL`. On Windows, `localhost` tries IPv6 first: the database connection stalls and Ollama calls lose about 2 s each.
+> **Use `127.0.0.1`, not `localhost`,** in `DATABASE_URL` and `OLLAMA_BASE_URL`. On Windows, `localhost` tries IPv6 first: the database connection stalls and Ollama calls lose about 2 s each. (`API_CORS_ORIGINS` is the exception: it is the address the browser shows, not a connection the app opens.)
 
 Command-line options of `ask.py`: `--version`, `--product` (filters) and `--k` (number of chunks to retrieve, default 5).
 
 ---
 
-## 8. Dependencies
+## 9. Dependencies
 
 Declared in `pyproject.toml` (there is no `requirements.txt`):
 
@@ -263,7 +382,8 @@ Declared in `pyproject.toml` (there is no `requirements.txt`):
 | core | `python-dotenv`, `psycopg[binary]`, `langchain-core`, `langchain-text-splitters`, `pypdf` | Always |
 | `ollama` | `langchain-ollama` | Ollama chat and embedding models |
 | `pgvector` | `langchain-postgres`, `asyncpg` | PostgreSQL vector store |
-| `dev` | `pytest` | Running tests |
+| `api` | `fastapi`, `uvicorn` | The HTTP API |
+| `dev` | `pytest`, `httpx` | Running tests (`httpx` is needed by FastAPI's `TestClient`) |
 
 External services: **Docker Desktop** (for the database) and **Ollama** with the two models pulled.
 
@@ -271,18 +391,18 @@ External services: **Docker Desktop** (for the database) and **Ollama** with the
 
 ---
 
-## 9. Running it locally (Windows)
+## 10. Running it locally (Windows)
 
 **Prerequisites:** Python 3.10+ (tested on 3.14), Docker Desktop running, Ollama installed and running, Git.
 
 For a step-by-step walkthrough in PowerShell that explains every command, see [run-locally-windows.md](run-locally-windows.md).
 
-From the repository root, on branch `poc/langchain-ollama`:
+From the repository root, on branch `feature/rest-api`:
 
 ```bash
 # 1. Python environment and dependencies
 python -m venv .venv
-.venv/Scripts/python.exe -m pip install -e ".[ollama,pgvector,dev]"
+.venv/Scripts/python.exe -m pip install -e ".[ollama,pgvector,dev,api]"
 
 # 2. Settings (the defaults work as-is)
 cp .env.example .env
@@ -299,9 +419,12 @@ ollama pull nomic-embed-text
 
 # 6. Ask
 .venv/Scripts/python.exe scripts/ask.py "Which features are deprecated?" --version 16.2
+
+# 7. Or run the HTTP API instead of steps 5–6 (docs at http://127.0.0.1:8000/docs, Ctrl+C to stop)
+.venv/Scripts/python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-Re-run step 5 whenever files in `documents/` are added, changed or removed. Stop the database with `docker compose down` (data is kept); `docker compose down -v` deletes it.
+Re-run step 5 (or `POST /documents/ingest`) whenever files in `documents/` are added, changed or removed. Stop the database with `docker compose down` (data is kept); `docker compose down -v` deletes it.
 
 **Expect slow answers on a laptop CPU:** about 15–40 seconds with `gemma3:4b`, and about a minute for the first question after Ollama starts (the model loads into memory).
 
@@ -313,11 +436,11 @@ Re-run step 5 whenever files in `documents/` are added, changed or removed. Stop
 .venv/Scripts/python.exe -m pytest tests/unit/test_loaders.py::test_markdown_gives_one_document   # one test
 ```
 
-Unit tests use stand-ins (a fake vector store, LangChain's `FakeListChatModel`, fake Ollama/database responses). Integration tests create and drop their own temporary tables, so your `chunks` table is not touched. Add `-p no:warnings` to hide a harmless deprecation warning from the `langsmith` package on Python 3.14.
+Unit tests use stand-ins (a fake vector store, LangChain's `FakeListChatModel`, fake Ollama/database responses); the API tests call the app through FastAPI's `TestClient`. Integration tests are marked `integration` and are skipped by the default `pytest` run. They create and drop their own temporary tables, so your `chunks` table is not touched; the API integration test (`tests/integration/test_api_live.py`) also uses its own temporary documents folder and checks `/health`, ingestion through the API, and `/chat` answering from the document it indexed. Add `-p no:warnings` to hide a harmless deprecation warning from the `langsmith` package on Python 3.14.
 
 ### When something is not running
 
-Both scripts check their services first and stop with one line, for example:
+Both scripts check their services first and stop with one line, for example (the API returns the same lines in a 503, see section 7.4):
 
 | Message starts with | Fix |
 |---|---|
@@ -329,7 +452,7 @@ Both scripts check their services first and stop with one line, for example:
 
 ---
 
-## 10. Project layout
+## 11. Project layout
 
 ```
 RAG/
@@ -341,6 +464,11 @@ RAG/
 │   ├── health.py            # service checks
 │   ├── providers.py         # chat model, embeddings, vector store (the only backend-specific code)
 │   ├── database.py          # psycopg connections, URL helpers, table_exists, indexed_files
+│   ├── service.py           # shared glue for scripts and API: build_services, run_ingest, ask
+│   ├── api/
+│   │   ├── app.py           # FastAPI app: /health, /chat, /documents/ingest
+│   │   ├── schemas.py       # request/response models
+│   │   └── jobs.py          # in-memory ingestion job registry
 │   ├── ingestion/
 │   │   ├── loaders.py       # files → Documents + metadata
 │   │   ├── chunking.py      # Documents → chunks
@@ -361,11 +489,11 @@ RAG/
 
 ---
 
-## 11. Missing or incomplete parts
+## 12. Missing or incomplete parts
 
 **Not built:**
 
-- **HTTP API:** only the two command-line scripts; `answer()` in `llm.py` is ready to be called from one.
+- **API features:** no authentication, no document upload (ingestion only reads `DOCUMENTS_DIR`), no streaming `/chat` (the whole answer arrives at once), no way to cancel an ingestion job.
 - **Database migrations:** the `chunks` table is created by `providers.get_vector_store()`; there is no schema file or migration tool.
 - **Reranking:** retrieved chunks are used in distance order as returned.
 - **Providers:** only Ollama (models) and pgvector (storage); no Azure or other providers.
@@ -373,15 +501,17 @@ RAG/
 - **Search:** vector search only. No keyword/full-text search, no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents).
 - **Smarter chunking:** no splitting by Markdown headings; tables in PDFs come out as plain text in reading order.
 - **Product features:** no mini document-management system (DMS), user interface, user accounts or permissions.
-- **Deployment:** runs only on a developer machine; no server deployment.
+- **Deployment:** runs only on a developer machine; no server deployment, no production server settings for uvicorn.
 
 **Known limitations and inconsistencies:**
 
 - The **Sources** list shows all retrieved chunks, not only the ones the answer cites.
-- The "I don't know" check in `ask.py` is a text match on the model's reply; if the model rephrases it, sources are still shown.
+- The "I don't know" check (`service.sources_to_show()`, also behind `no_answer` in `/chat`) is a text match on the model's reply; if the model rephrases it, sources are still shown.
 - No structured (JSON) output parsing: answers are plain text with `[n]` citations.
 - The small `gemma3:4b` model can miss details spread over several passages.
-- Each run spends roughly 1–9 s setting up the Ollama connection (the Ollama client library loads HTTPS certificates even for the local plain-HTTP address).
-- The `integration` marker description in `pyproject.toml` still says "needs a remote database via SSH tunnel"; in practice the integration tests need the local Docker database and Ollama.
+- Each script run spends roughly 1–9 s setting up the Ollama connection (the Ollama client library loads HTTPS certificates even for the local plain-HTTP address). The API pays this once, when it builds its services.
+- Ingestion jobs live in the API server's memory: history is lost on restart, a restart mid-job leaves no record, and the API must run as a single worker process.
+- A failed ingestion job reports no partial results, because `ingest()` returns its report only when it finishes.
+- `/health` (and the check before `/chat` and ingestion) takes about 12 s to report a stopped database, because of the 10 s connection timeout.
 - `.env.example` mentions a remote PostgreSQL (through an SSH tunnel) as an alternative, but no remote database is set up for this app yet.
 - The `documents/` folder convention assumes versioned product documentation; files outside it work but cannot be filtered by version.
