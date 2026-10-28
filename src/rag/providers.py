@@ -48,6 +48,23 @@ def get_vector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
     raise ValueError(f"Unsupported vector store: {settings.vector_store!r}")
 
 
+def unavailable_errors() -> tuple[type[Exception], ...]:
+    """Exceptions meaning Ollama or the database couldn't be reached (refused, timed out, dropped)."""
+    import psycopg
+    from sqlalchemy.exc import InterfaceError, OperationalError
+
+    # OSError covers the Ollama client's ConnectionError and asyncpg's refused/timed-out connections.
+    return (OSError, psycopg.OperationalError, OperationalError, InterfaceError)
+
+
+def model_errors() -> tuple[type[Exception], ...]:
+    """Exceptions meaning the model service was reached but the call failed (e.g. not enough memory)."""
+    import httpx
+    from ollama import ResponseError
+
+    return (ResponseError, httpx.HTTPError)
+
+
 def _pgvector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
     from langchain_postgres import Column, PGEngine, PGVectorStore
 

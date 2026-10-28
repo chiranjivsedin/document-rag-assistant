@@ -36,3 +36,21 @@ def test_unknown_providers_are_rejected():
 def test_pgvector_requires_database_url():
     with pytest.raises(ValueError, match="DATABASE_URL is required"):
         get_vector_store(get_settings({}), embeddings=None)
+
+
+def test_error_groups_cover_the_backends_failures():
+    import httpx
+    import ollama
+    import psycopg
+    import sqlalchemy.exc
+
+    from rag.providers import model_errors, unavailable_errors
+
+    unavailable = unavailable_errors()
+    # the Ollama client raises the built-in ConnectionError when it can't connect
+    assert isinstance(ConnectionError("Failed to connect to Ollama"), unavailable)
+    assert isinstance(psycopg.OperationalError("down"), unavailable)
+    assert isinstance(sqlalchemy.exc.OperationalError("SELECT 1", {}, Exception("down")), unavailable)
+    assert isinstance(ollama.ResponseError("out of memory", 500), model_errors())
+    assert isinstance(httpx.ReadTimeout("slow"), model_errors())
+    assert not isinstance(ollama.ResponseError("x"), unavailable)
