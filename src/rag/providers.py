@@ -10,8 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
 from rag.config import Settings
-from rag.database.connection import async_database_url
-from rag.database.repository import table_exists
+from rag.database import async_database_url, table_exists
 
 # Chunk metadata kept as real table columns, so retrieval can filter on them in SQL.
 METADATA_COLUMNS = {

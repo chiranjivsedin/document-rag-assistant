@@ -68,8 +68,7 @@ flowchart TD
 | **Settings** | Reads `.env` / environment variables, applies defaults, rejects bad values with a clear message | `src/rag/config.py` |
 | **Service checks** | Before any work: is Ollama reachable, are the models installed, can we connect to the database? Prints one line per problem | `src/rag/health.py` |
 | **Providers** | The **only** place that creates the chat model, the embedding model and the vector store. Everything else uses LangChain's standard interfaces, so backends can be swapped here | `src/rag/providers.py` |
-| **Database connection** | Opens PostgreSQL connections (10 s timeout) and converts the URL for the async driver | `src/rag/database/connection.py` |
-| **Repository** | Small SQL helpers: does the table exist, which files are indexed (with their fingerprint and embedding model) | `src/rag/database/repository.py` |
+| **Database helpers** | Opens PostgreSQL connections (10 s timeout), converts the URL for the async driver, checks the table exists, lists indexed files (with their fingerprint and embedding model) | `src/rag/database.py` |
 | **Loaders** | Finds supported files and turns them into LangChain `Document`s with metadata from the folder path | `src/rag/ingestion/loaders.py` |
 | **Chunking** | Splits each document into overlapping chunks that keep the metadata | `src/rag/ingestion/chunking.py` |
 | **Ingestion pipeline** | Decides per file: add, replace, skip or remove; stores chunks | `src/rag/ingestion/pipeline.py` |
@@ -155,7 +154,7 @@ Before storing, each chunk is tagged with `embedding_model` (e.g. `nomic-embed-t
 
 ### 5.5 Embed and store
 
-There is **no separate embedding step in our code**: `store.add_documents(chunks)` (LangChain's `PGVectorStore`) sends each chunk's text to Ollama's `nomic-embed-text` model and writes text + embedding + metadata into PostgreSQL in one go. (`src/rag/ingestion/embeddings.py` exists but is an empty placeholder.)
+There is **no separate embedding step in our code**: `store.add_documents(chunks)` (LangChain's `PGVectorStore`) sends each chunk's text to Ollama's `nomic-embed-text` model and writes text + embedding + metadata into PostgreSQL in one go.
 
 ### 5.6 The database table
 
@@ -337,22 +336,16 @@ RAG/
 │   ├── config.py            # settings
 │   ├── health.py            # service checks
 │   ├── providers.py         # chat model, embeddings, vector store (the only backend-specific code)
-│   ├── database/
-│   │   ├── connection.py    # psycopg connections, URL helpers
-│   │   ├── repository.py    # table_exists, indexed_files
-│   │   └── migrations/001_init.sql   # placeholder, not used
+│   ├── database.py          # psycopg connections, URL helpers, table_exists, indexed_files
 │   ├── ingestion/
 │   │   ├── loaders.py       # files → Documents + metadata
 │   │   ├── chunking.py      # Documents → chunks
-│   │   ├── pipeline.py      # add / update / skip / remove
-│   │   └── embeddings.py    # placeholder, not used
+│   │   └── pipeline.py      # add / update / skip / remove
 │   ├── retrieval/
-│   │   ├── search.py        # retrieve() with filters + distance
-│   │   └── rerank.py        # placeholder, not used
-│   ├── generation/
-│   │   ├── prompts.py       # ANSWER_PROMPT, format_context, source_label
-│   │   └── llm.py           # LCEL chain, answer(), stream_answer()
-│   └── api/app.py           # placeholder, not used
+│   │   └── search.py        # retrieve() with filters + distance
+│   └── generation/
+│       ├── prompts.py       # ANSWER_PROMPT, format_context, source_label
+│       └── llm.py           # LCEL chain, answer(), stream_answer()
 ├── tests/unit/              # fast tests with fakes
 ├── tests/integration/       # live tests (Docker + Ollama)
 ├── documents/               # your files (git-ignored)
@@ -366,18 +359,11 @@ RAG/
 
 ## 11. Missing or incomplete parts
 
-**Placeholder files with no code** (they contain only a one-line description):
-
-| File | Intended for | Today |
-|---|---|---|
-| `src/rag/api/app.py` | HTTP API (`/ingest`, `/ask`, `/health`) | No API; only the two command-line scripts |
-| `src/rag/ingestion/embeddings.py` | Generating embeddings | Done inside `PGVectorStore` instead |
-| `src/rag/retrieval/rerank.py` | Re-ordering retrieved chunks | No reranking |
-| `src/rag/database/migrations/001_init.sql` | Database schema | Comments only; the table is created by `providers.get_vector_store()` |
-| `tests/conftest.py` | Shared test fixtures | Empty |
-
 **Not built:**
 
+- **HTTP API:** only the two command-line scripts; `answer()` in `llm.py` is ready to be called from one.
+- **Database migrations:** the `chunks` table is created by `providers.get_vector_store()`; there is no schema file or migration tool.
+- **Reranking:** retrieved chunks are used in distance order as returned.
 - **Providers:** only Ollama (models) and pgvector (storage); no Azure or other providers.
 - **File types:** only PDF, Markdown and text. No Word, Excel, PowerPoint or HTML; no OCR for scanned PDFs.
 - **Search:** vector search only. No keyword/full-text search, no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents).

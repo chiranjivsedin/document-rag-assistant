@@ -7,8 +7,8 @@ from urllib.request import urlopen
 
 import psycopg
 
+from rag import database
 from rag.config import Settings
-from rag.database import connection
 
 
 def check_services(settings: Settings, need_chat_model: bool) -> list[str]:
@@ -43,10 +43,10 @@ def _database_problems(database_url: str | None) -> list[str]:
     if not database_url:
         return ["DATABASE_URL is not set. Copy .env.example to .env (it points at the local Docker database)."]
     try:
-        with connection.connect(database_url):
+        with database.connect(database_url):
             return []
     except psycopg.OperationalError as error:
-        where = urlsplit(connection.plain_database_url(database_url))  # host and port only, never the password
+        where = urlsplit(database.plain_database_url(database_url))  # host and port only, never the password
         reason = str(error).strip().splitlines()[0] if str(error).strip() else type(error).__name__
         hint = (
             "Check the user name and password in DATABASE_URL."

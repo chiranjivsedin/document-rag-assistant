@@ -1,6 +1,7 @@
-"""PostgreSQL connection handling (psycopg), plus the URL form the async vector store needs."""
+"""PostgreSQL helpers (psycopg): connections, the URL form the async vector store needs, and small queries."""
 
 import psycopg
+from psycopg import sql
 
 
 def connect(database_url: str) -> psycopg.Connection:
@@ -25,3 +26,19 @@ def _split(url: str) -> tuple[str, str, str]:
     if not sep:
         raise ValueError("DATABASE_URL must look like postgresql://user:password@host:port/database")
     return scheme, sep, rest
+
+
+def table_exists(database_url: str, table: str) -> bool:
+    with connect(database_url) as conn:
+        return conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]
+
+
+def indexed_files(database_url: str, table: str) -> dict[str, tuple[str, str]]:
+    """Each indexed source file → (file_hash, embedding_model) of its stored chunks."""
+    if not table_exists(database_url, table):
+        return {}
+    query = sql.SQL("SELECT source, min(file_hash), min(embedding_model) FROM {} GROUP BY source").format(
+        sql.Identifier(table)
+    )
+    with connect(database_url) as conn:
+        return {source: (file_hash, model) for source, file_hash, model in conn.execute(query)}

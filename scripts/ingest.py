@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from rag.config import get_settings
-from rag.database.repository import indexed_files
+from rag.database import indexed_files
 from rag.health import check_services
 from rag.ingestion.pipeline import ingest
 from rag.providers import get_embeddings, get_vector_store

@@ -1,6 +1,6 @@
 import pytest
 
-from rag.database.connection import async_database_url, plain_database_url
+from rag.database import async_database_url, plain_database_url
 
 
 @pytest.mark.parametrize("url, expected", [

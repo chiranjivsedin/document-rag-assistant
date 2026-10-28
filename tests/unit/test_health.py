@@ -32,7 +32,7 @@ def db_down(url):
 @pytest.fixture(autouse=True)
 def healthy(monkeypatch):
     monkeypatch.setattr(health, "urlopen", ollama_with("gemma3:4b", "nomic-embed-text:latest"))
-    monkeypatch.setattr(health.connection, "connect", db_ok)
+    monkeypatch.setattr(health.database, "connect", db_ok)
 
 
 def test_all_good():
@@ -61,7 +61,7 @@ def test_chat_model_not_needed_for_ingest(monkeypatch):
 
 
 def test_database_down_message_hides_password(monkeypatch):
-    monkeypatch.setattr(health.connection, "connect", db_down)
+    monkeypatch.setattr(health.database, "connect", db_down)
     [message] = health.check_services(SETTINGS, need_chat_model=False)
     assert message.startswith("Can't connect to the database at 127.0.0.1:5433 (connection timeout expired).")
     assert "docker compose up -d" in message
@@ -71,7 +71,7 @@ def test_database_down_message_hides_password(monkeypatch):
 def test_wrong_password_gets_its_own_hint(monkeypatch):
     def bad_password(url):
         raise psycopg.OperationalError('FATAL:  password authentication failed for user "rag"')
-    monkeypatch.setattr(health.connection, "connect", bad_password)
+    monkeypatch.setattr(health.database, "connect", bad_password)
     [message] = health.check_services(SETTINGS, need_chat_model=False)
     assert message.endswith("Check the user name and password in DATABASE_URL.")
     assert "docker compose" not in message
