@@ -63,6 +63,8 @@ flowchart TD
 
 ## 3. Components and their files
 
+For a file-by-file walk through both workflows in call order, see [under-the-hood.md](under-the-hood.md).
+
 | Component | Responsibility | Source file |
 |---|---|---|
 | **Settings** | Reads `.env` / environment variables, applies defaults, rejects bad values with a clear message | `src/rag/config.py` |
