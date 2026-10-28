@@ -10,10 +10,8 @@ import time
 from pathlib import Path
 
 from rag.config import get_settings
-from rag.database import indexed_files
 from rag.health import check_services
-from rag.ingestion.pipeline import ingest
-from rag.providers import get_embeddings, get_vector_store
+from rag.service import build_services, run_ingest
 
 
 def main() -> int:
@@ -31,9 +29,7 @@ def main() -> int:
         return 1
 
     started = time.monotonic()
-    store = get_vector_store(settings, get_embeddings(settings))
-    indexed = indexed_files(settings.database_url, settings.vector_table)
-    report = ingest(args.documents_dir, store, indexed, settings)
+    report = run_ingest(build_services(settings, with_chat_model=False), args.documents_dir)
 
     for label, sources in [
         ("Added", report.added),

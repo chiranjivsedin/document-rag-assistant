@@ -10,10 +10,10 @@ import time
 
 from rag.config import get_settings
 from rag.generation.llm import stream_answer
-from rag.generation.prompts import NO_ANSWER, source_label
+from rag.generation.prompts import source_label
 from rag.health import check_services
-from rag.providers import get_chat_model, get_embeddings, get_vector_store
 from rag.retrieval.search import retrieve
+from rag.service import build_services, sources_to_show
 
 
 def main() -> int:
@@ -31,17 +31,18 @@ def main() -> int:
         return 1
 
     started = time.monotonic()
-    store = get_vector_store(settings, get_embeddings(settings))
-    docs = retrieve(store, args.question, k=args.k, version=args.version, product=args.product)
+    services = build_services(settings)
+    docs = retrieve(services.store, args.question, k=args.k, version=args.version, product=args.product)
     text = ""
-    for piece in stream_answer(args.question, docs, get_chat_model(settings)):
+    for piece in stream_answer(args.question, docs, services.chat_model):
         print(piece, end="", flush=True)  # show the answer as the model writes it
         text += piece
     print()
 
-    if docs and NO_ANSWER not in text:  # don't list passages the model didn't use
+    sources = sources_to_show(text, docs)
+    if sources:
         print("\nSources:")
-        for number, doc in enumerate(docs, 1):
+        for number, doc in enumerate(sources, 1):
             print(f"  [{number}] {source_label(doc)}  (distance {doc.metadata['distance']:.3f})")
     print(f"\n({time.monotonic() - started:.1f}s, model {settings.llm_model})")
     return 0
