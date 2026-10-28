@@ -273,6 +273,8 @@ External services: **Docker Desktop** (for the database) and **Ollama** with the
 
 **Prerequisites:** Python 3.10+ (tested on 3.14), Docker Desktop running, Ollama installed and running, Git.
 
+For a step-by-step walkthrough in PowerShell that explains every command, see [run-locally-windows.md](run-locally-windows.md).
+
 From the repository root, on branch `poc/langchain-ollama`:
 
 ```bash
