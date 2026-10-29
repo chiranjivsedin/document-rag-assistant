@@ -1,6 +1,6 @@
 // Small fetch wrapper for the RAG API. URLs are relative: Vite's dev proxy (vite.config.ts) forwards them to uvicorn.
 
-import type { HealthResponse } from "./types";
+import type { ChatRequest, ChatResponse, HealthResponse } from "./types";
 
 /** The API answered with an error status; `detail` is its message (or a summary of FastAPI's 422 field errors). */
 export class ApiError extends Error {
@@ -25,6 +25,7 @@ async function send(path: string, init?: RequestInit): Promise<Response> {
   try {
     return await fetch(path, init);
   } catch (error) {
+    if (init?.signal?.aborted) throw error; // the caller cancelled; not a connection problem
     throw new ApiUnreachableError(error);
   }
 }
@@ -59,10 +60,27 @@ export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   if ((response.ok || response.status === 503) && isHealthResponse(body)) {
     return body;
   }
+  throw failure(response, body);
+}
+
+/** POST /chat. Takes 15–60 s on a laptop CPU; abort `signal` to stop waiting (the server still finishes). */
+export async function postChat(request: ChatRequest, signal?: AbortSignal): Promise<ChatResponse> {
+  const response = await send("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    signal,
+  });
+  const body = await readJson(response);
+  if (response.ok) return body as ChatResponse;
+  throw failure(response, body);
+}
+
+function failure(response: Response, body: unknown): Error {
   if (response.status >= 500 && body === undefined) {
-    throw new ApiUnreachableError(`proxy returned ${response.status} without a body`);
+    return new ApiUnreachableError(`proxy returned ${response.status} without a body`);
   }
-  throw new ApiError(response.status, errorDetail(body, response.status));
+  return new ApiError(response.status, errorDetail(body, response.status));
 }
 
 function isHealthResponse(body: unknown): body is HealthResponse {

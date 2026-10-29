@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { HealthBanner } from "./components/HealthBanner";
+import { ChatPage } from "./features/chat/ChatPage";
 
 // One tab per area of the app. The current tab lives in the URL hash (#chat, #documents, ...), so it survives a
 // reload and the built app is just index.html: no client-side routes can collide with API paths like /chat.
@@ -9,7 +10,7 @@ export const TABS = [
     id: "chat",
     label: "Chat",
     summary: "Ask questions about the indexed documents and see the cited sources.",
-    phase: "6B",
+    phase: null,
   },
   {
     id: "documents",
@@ -61,7 +62,7 @@ export function App() {
               role="tab"
               id={`tab-${t.id}`}
               aria-selected={t.id === current}
-              aria-controls="panel"
+              aria-controls={`panel-${t.id}`}
               className={t.id === current ? "tab tab-current" : "tab"}
             >
               {t.label}
@@ -70,11 +71,25 @@ export function App() {
         </nav>
       </header>
       <HealthBanner />
-      <main id="panel" role="tabpanel" aria-labelledby={`tab-${tab.id}`} className="panel">
-        <h2>{tab.label}</h2>
-        <p>{tab.summary}</p>
-        <p className="placeholder">Not built yet (planned for phase {tab.phase}).</p>
+      {/* Chat stays mounted while another tab is open, so its history and a pending answer survive tab switches. */}
+      <main
+        id="panel-chat"
+        role="tabpanel"
+        aria-labelledby="tab-chat"
+        className="panel"
+        hidden={current !== "chat"}
+      >
+        <h2>Chat</h2>
+        <p>{TABS[0].summary}</p>
+        <ChatPage />
       </main>
+      {tab.phase && (
+        <main id={`panel-${tab.id}`} role="tabpanel" aria-labelledby={`tab-${tab.id}`} className="panel">
+          <h2>{tab.label}</h2>
+          <p>{tab.summary}</p>
+          <p className="placeholder">Not built yet (planned for phase {tab.phase}).</p>
+        </main>
+      )}
     </div>
   );
 }

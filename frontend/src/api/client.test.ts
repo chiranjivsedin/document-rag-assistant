@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiError, ApiUnreachableError, errorDetail, getHealth } from "./client";
+import { ApiError, ApiUnreachableError, errorDetail, getHealth, postChat } from "./client";
 
 const OK = { status: "ok", llm_model: "gemma3:4b", embedding_model: "nomic-embed-text", problems: [] };
 const DOWN = {
@@ -50,6 +50,40 @@ describe("getHealth", () => {
   it("keeps a real 502 from the API (it has a JSON detail) as an ApiError", async () => {
     respond(502, { detail: "The model service failed: out of memory" });
     await expect(getHealth()).rejects.toMatchObject({ status: 502, detail: "The model service failed: out of memory" });
+  });
+});
+
+describe("postChat", () => {
+  const ANSWER = { answer: "A [1].", no_answer: false, sources: [], model: "gemma3:4b", elapsed_ms: 1200 };
+
+  it("POSTs the request as JSON to /chat and returns the answer", async () => {
+    const fetch = respond(200, ANSWER);
+    expect(await postChat({ question: "Q?", version: "16.2", k: 3 })).toEqual(ANSWER);
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/chat");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body as string)).toEqual({ question: "Q?", version: "16.2", k: 3 });
+  });
+
+  it("throws ApiError with the detail for error statuses", async () => {
+    respond(503, { detail: "Ollama or the database stopped responding. Check GET /health." });
+    await expect(postChat({ question: "Q?" })).rejects.toMatchObject({
+      status: 503,
+      detail: "Ollama or the database stopped responding. Check GET /health.",
+    });
+  });
+
+  it("passes a cancellation through as an abort, not as 'unreachable'", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new DOMException("Aborted", "AbortError"))),
+    );
+    const controller = new AbortController();
+    controller.abort();
+    const error = await postChat({ question: "Q?" }, controller.signal).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(ApiUnreachableError);
+    expect((error as DOMException).name).toBe("AbortError");
   });
 });
 
