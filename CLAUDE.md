@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Branch `poc/langchain-ollama`: a working local prototype (LangChain + Ollama + pgvector in Docker) with two command-line scripts. Branch `feature/rest-api` (off it) adds a local FastAPI HTTP API over the same functions. `main` holds only the scaffold until the lead confirms requirements (VM, "16.2" product, mini DMS, hosting); then these branches are merged or redone. Not built yet: mini DMS, document uploads, UI, authentication, Azure providers, deployment, hybrid (keyword) search, a relevance cut-off.
+A working local prototype: LangChain + Ollama + pgvector in Docker, two command-line scripts, a FastAPI HTTP API over the same functions, and a React frontend in `frontend/` (Chat and Ingestion screens; Documents and Release notes tabs are placeholders). Not built yet: mini DMS (document list/upload API and screens), the 16.2 release-notes view, authentication, Azure providers, deployment, hybrid (keyword) search, a relevance cut-off.
+
+Branches:
+- `integration`: the complete working application (backend + frontend). Create each new phase's branch from it (e.g. `feature/dms-api`), and merge the branch back after review and approval.
+- `main`: lead-approved work only. It holds just the scaffold until the lead confirms requirements (VM, "16.2" product, mini DMS, hosting); `integration` is merged into it only then.
+- `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`: earlier phase branches, each contained in `integration`; kept for reference.
 
 ## Running the prototype (Windows, from the repo root)
 
