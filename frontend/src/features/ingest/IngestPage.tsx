@@ -4,6 +4,7 @@ import { ApiError, getIngestJob, startIngest } from "../../api/client";
 import type { IngestJob } from "../../api/types";
 import { ElapsedTimer } from "../../components/ElapsedTimer";
 import { describeError, ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
+import { AlertIcon, IndexIcon } from "../../components/Icons";
 import { IngestReportView } from "./IngestReportView";
 
 type View =
@@ -81,51 +82,74 @@ export function IngestPage({ pollIntervalMs = 2000 }: { pollIntervalMs?: number 
   const busy = view.kind === "starting" || view.kind === "running";
 
   return (
-    <div className="ingest">
-      <p className="hint">
-        Reads the server's documents folder (<code>DOCUMENTS_DIR</code>): new and changed files are indexed, files
-        deleted from the folder are removed, and unchanged files are skipped, so repeat runs are quick. Only one
-        indexing job runs at a time.
-      </p>
-      <button type="button" className="primary" onClick={start} disabled={busy}>
-        Index documents
-      </button>
-
-      {view.kind === "starting" && (
-        <p className="ingest-result" role="status">
-          Starting… (checking Ollama and the database first)
-        </p>
-      )}
-
-      {view.kind === "running" && (
-        <div className="ingest-result" role="status">
-          <p>
-            <strong>Indexing…</strong>{" "}
-            {view.job ? <ElapsedTimer startedAt={Date.parse(view.job.started_at)} /> : "checking its status"}
-          </p>
-          {view.followed && <p className="hint">An indexing job was already running, so this page is following it.</p>}
-          <p className="hint">
-            Job <code>{view.jobId.slice(0, 8)}</code> · status checked every {pollIntervalMs / 1000} s.
-          </p>
-          {view.pollError && (
-            <p className="form-error">
-              Couldn't check the job status ({view.pollError.title}: {view.pollError.detail}). Still trying…
+    <div className="page page-split">
+      <div className="page-main">
+        <section className="hero-card hero-compact">
+          <div>
+            <h2>Index the documents folder</h2>
+            <p>
+              Reads the server's documents folder (<code>DOCUMENTS_DIR</code>) and brings the search index up to date.
+              Only one indexing job runs at a time.
             </p>
-          )}
-        </div>
-      )}
+          </div>
+          <button type="button" className="button button-primary" onClick={start} disabled={busy}>
+            <IndexIcon />
+            Index documents
+          </button>
+        </section>
 
-      {view.kind === "succeeded" && <IngestReportView job={view.job} />}
+        {view.kind === "idle" && (
+          <p className="empty-note">No indexing run yet in this session. Results of the next run appear here.</p>
+        )}
 
-      {view.kind === "failed" && (
-        <div className="ingest-result">
-          <ErrorMessage error={{ title: "Indexing failed", detail: view.job.error ?? "The server gave no reason." }} />
-          <p className="hint">Files indexed before the failure stay indexed; run indexing again to finish the rest.</p>
-        </div>
-      )}
+        {view.kind === "starting" && (
+          <div className="panel-card job-card" role="status">
+            <div className="progress" aria-hidden="true">
+              <span />
+            </div>
+            <p>Starting… (checking Ollama and the database first)</p>
+          </div>
+        )}
 
-      {view.kind === "lost" && (
-        <div className="ingest-result">
+        {view.kind === "running" && (
+          <div className="panel-card job-card" role="status">
+            <div className="job-line">
+              <span className="dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+              <strong>Indexing…</strong>
+              {view.job ? <ElapsedTimer startedAt={Date.parse(view.job.started_at)} /> : <span>checking its status</span>}
+            </div>
+            <div className="progress" aria-hidden="true">
+              <span />
+            </div>
+            {view.followed && <p className="hint">An indexing job was already running, so this page is following it.</p>}
+            <p className="hint">
+              Job <code>{view.jobId.slice(0, 8)}</code>, status checked every {pollIntervalMs / 1000} s.
+            </p>
+            {view.pollError && (
+              <p className="banner banner-warn">
+                <AlertIcon />
+                <span className="banner-body">
+                  Couldn't check the job status ({view.pollError.title}: {view.pollError.detail}). Still trying…
+                </span>
+              </p>
+            )}
+          </div>
+        )}
+
+        {view.kind === "succeeded" && <IngestReportView job={view.job} />}
+
+        {view.kind === "failed" && (
+          <>
+            <ErrorMessage error={{ title: "Indexing failed", detail: view.job.error ?? "The server gave no reason." }} />
+            <p className="hint">Files indexed before the failure stay indexed; run indexing again to finish the rest.</p>
+          </>
+        )}
+
+        {view.kind === "lost" && (
           <ErrorMessage
             error={{
               title: "The server no longer knows this job",
@@ -133,14 +157,20 @@ export function IngestPage({ pollIntervalMs = 2000 }: { pollIntervalMs?: number 
                 "It was probably restarted: job history is kept only in the server's memory. Files indexed before the restart stay indexed; run indexing again to finish the rest.",
             }}
           />
-        </div>
-      )}
+        )}
 
-      {view.kind === "start-error" && (
-        <div className="ingest-result">
-          <ErrorMessage error={view.error} />
-        </div>
-      )}
+        {view.kind === "start-error" && <ErrorMessage error={view.error} />}
+      </div>
+
+      <aside className="panel-card page-aside" aria-labelledby="how-indexing-works">
+        <h3 id="how-indexing-works">How indexing works</h3>
+        <ul className="check-list">
+          <li>New and changed files are read, split into passages and indexed.</li>
+          <li>Unchanged files are skipped, so repeat runs are quick.</li>
+          <li>Files deleted from the folder are removed from the index.</li>
+          <li>PDF (with selectable text), Markdown and text files are supported.</li>
+        </ul>
+      </aside>
     </div>
   );
 }

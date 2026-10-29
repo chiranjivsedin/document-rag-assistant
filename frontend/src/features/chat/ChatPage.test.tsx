@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -84,6 +84,27 @@ async function ask(question: string, options: { product?: string; version?: stri
   return user;
 }
 
+/** The chips under the question showing its filters and top-k. */
+function scopeChips() {
+  return within(screen.getByRole("list", { name: "Search scope" }))
+    .getAllByRole("listitem")
+    .map((chip) => chip.textContent);
+}
+
+/** The source cards in the strip (not the tag chips in the passage preview). */
+function sourceCards() {
+  return within(screen.getByRole("region", { name: "Sources" }))
+    .getAllByRole("listitem")
+    .filter((item) => !item.closest('[aria-label="Details"]'));
+}
+
+/** The detail tags of the passage preview currently shown. */
+function previewTags() {
+  return within(screen.getByRole("list", { name: "Details" }))
+    .getAllByRole("listitem")
+    .map((tag) => tag.textContent);
+}
+
 describe("ChatPage: asking", () => {
   it("sends the question with trimmed filters and k, and shows the answer with model and time", async () => {
     const { fetch, requests } = answer(ANSWERED);
@@ -93,8 +114,8 @@ describe("ChatPage: asking", () => {
     expect(await screen.findByText(/See also/)).toBeTruthy();
     expect(fetch).toHaveBeenCalledWith("/chat", expect.objectContaining({ method: "POST" }));
     expect(requests).toEqual([{ question: "What is deprecated?", k: 3, product: "acme-dms", version: "1.0" }]);
-    expect(screen.getByText("gemma3:4b · 18.4 s")).toBeTruthy();
-    expect(screen.getByText("product acme-dms · version 1.0 · top 3")).toBeTruthy();
+    expect(screen.getByText("Answered by gemma3:4b in 18.4 s")).toBeTruthy();
+    expect(scopeChips()).toEqual(["product acme-dms", "version 1.0", "top 3"]);
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe(""); // ready for the next question
   });
 
@@ -104,6 +125,24 @@ describe("ChatPage: asking", () => {
     await ask("Q?", { product: "   " });
     await screen.findByText(/See also/);
     expect(requests).toEqual([{ question: "Q?", k: 5 }]);
+    expect(scopeChips()).toEqual(["all documents", "top 5"]);
+  });
+
+  it("offers example questions that fill the composer without sending", async () => {
+    const { fetch } = answer(ANSWERED);
+    render(<ChatPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Which features are deprecated\?/ }));
+    expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("Which features are deprecated?");
+    expect(document.activeElement).toBe(screen.getByLabelText("Question"));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("places a question and version handed over from another screen", async () => {
+    answer(ANSWERED);
+    const { rerender } = render(<ChatPage />);
+    rerender(<ChatPage prefill={{ id: 1, question: "What is new in version 16.2?", version: "16.2" }} />);
+    expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("What is new in version 16.2?");
+    expect((screen.getByLabelText("Version (optional)") as HTMLInputElement).value).toBe("16.2");
   });
 
   it("keeps the Ask button disabled for a blank question", async () => {
@@ -121,14 +160,33 @@ describe("ChatPage: asking", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("sends with Ctrl+Enter", async () => {
+  it("sends with Enter, and with Ctrl+Enter", async () => {
     const { requests } = answer(ANSWERED);
     render(<ChatPage />);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Question"), "Q?");
-    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.type(screen.getByLabelText("Question"), "First?{Enter}");
     await screen.findByText(/See also/);
-    expect(requests).toHaveLength(1);
+    await user.type(screen.getByLabelText("Question"), "Second?");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests.map((r) => (r as { question: string }).question)).toEqual(["First?", "Second?"]);
+  });
+
+  it("starts a new line with Shift+Enter instead of sending", async () => {
+    const { fetch } = answer(ANSWERED);
+    render(<ChatPage />);
+    await userEvent.type(screen.getByLabelText("Question"), "Line one{Shift>}{Enter}{/Shift}line two");
+    expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("Line one\nline two");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports each asked question for the sidebar's history", async () => {
+    answer(ANSWERED);
+    const onHistoryChange = vi.fn();
+    render(<ChatPage onHistoryChange={onHistoryChange} />);
+    await ask("Q?");
+    await screen.findByText(/See also/);
+    expect(onHistoryChange).toHaveBeenLastCalledWith([{ id: 1, question: "Q?" }]);
   });
 });
 
@@ -143,30 +201,53 @@ describe("ChatPage: citations and sources", () => {
     expect(screen.getByText(/See also \[7\]/)).toBeTruthy();
   });
 
-  it("highlights and focuses the source a citation points to", async () => {
+  it("a citation selects its source and opens and focuses the passage preview", async () => {
     answer(ANSWERED);
     render(<ChatPage />);
     const user = await ask("Q?");
     await screen.findByText(/See also/);
+    expect(screen.getByText("Select a source or a citation to read the passage.")).toBeTruthy();
     await user.click(screen.getAllByRole("button", { name: "Show source 2" })[0]);
-    const sources = within(screen.getByRole("region", { name: "Sources" })).getAllByRole("listitem");
-    expect(sources[1].getAttribute("aria-current")).toBe("true");
-    expect(document.activeElement).toBe(sources[1]);
-    expect(sources[0].getAttribute("aria-current")).toBeNull();
+    const cards = sourceCards();
+    expect(cards[1].getAttribute("aria-current")).toBe("true");
+    expect(cards[0].getAttribute("aria-current")).toBeNull();
+    const preview = screen.getByLabelText("Source 2");
+    expect(preview.textContent).toContain("Acme Web replaces the desktop client.");
+    await waitFor(() => expect(document.activeElement).toBe(preview));
   });
 
-  it("lists every source with its details and marks which ones the answer cites", async () => {
+  it("shows each source in the strip and its full details in the preview", async () => {
     answer(ANSWERED);
     render(<ChatPage />);
-    await ask("Q?");
+    const user = await ask("Q?");
     await screen.findByText(/See also/);
-    const [first, second, third] = within(screen.getByRole("region", { name: "Sources" })).getAllByRole("listitem");
-    expect(first.textContent).toContain("acme-dms/1.0/deprecated-features/deprecated-features.md");
-    expect(first.textContent).toContain("acme-dms · version 1.0 · deprecated-features · distance 0.213");
-    expect(first.textContent).toContain("Classic Desktop client: deprecated in 1.0.");
-    expect(second.textContent).toContain("page 3");
+    const [first, second, third] = sourceCards();
+    expect(first.textContent).toContain("deprecated-features.md");
+    expect(first.textContent).toContain("Version 1.0");
     expect(first.textContent).toContain("cited");
+    expect(second.textContent).toContain("Version 1.0, page 3");
     expect(third.textContent).toContain("retrieved, not cited");
+    expect(screen.getByText("2 of 3 cited")).toBeTruthy();
+
+    await user.click(within(first).getByRole("button"));
+    expect(within(first).getByRole("button").getAttribute("aria-pressed")).toBe("true");
+    const preview = screen.getByLabelText("Source 1");
+    expect(preview.textContent).toContain("acme-dms/1.0/deprecated-features/deprecated-features.md");
+    expect(previewTags()).toEqual(["acme-dms", "version 1.0", "deprecated-features", "distance 0.213", "cited"]);
+    expect(preview.textContent).toContain("Classic Desktop client: deprecated in 1.0.");
+
+    await user.click(within(third).getByRole("button"));
+    expect(previewTags()).toContain("retrieved, not cited");
+  });
+
+  it("copies the answer text", async () => {
+    answer(ANSWERED);
+    render(<ChatPage />);
+    const user = await ask("Q?"); // userEvent.setup() provides a stand-in clipboard
+    await screen.findByText(/See also/);
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeTruthy();
+    expect(await navigator.clipboard.readText()).toBe(ANSWERED.answer);
   });
 
   it("shows 'I don't know' answers without sources", async () => {
@@ -185,7 +266,7 @@ describe("ChatPage: waiting and cancelling", () => {
     render(<ChatPage />);
     await ask("Slow question?");
     const status = screen.getByRole("status");
-    expect(status.textContent).toContain("Waiting for the answer");
+    expect(status.textContent).toContain("Searching your documents and writing the answer");
     expect(status.textContent).toMatch(/\d+ s/);
     await userEvent.type(screen.getByLabelText("Question"), "Another?");
     expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(true);
@@ -202,7 +283,7 @@ describe("ChatPage: waiting and cancelling", () => {
 
     await user.click(screen.getByRole("button", { name: "Ask again" }));
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(screen.getAllByRole("article")).toHaveLength(2); // newest first: waiting again, then the cancelled one
+    expect(screen.getAllByRole("article")).toHaveLength(2); // the cancelled question, then the new attempt
   });
 });
 
