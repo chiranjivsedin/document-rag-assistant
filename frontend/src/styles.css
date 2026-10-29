@@ -365,3 +365,38 @@ button.citation {
   white-space: pre-wrap;
   font-size: 0.9rem;
 }
+
+/* Ingestion */
+
+.ingest > .hint {
+  margin-top: 0;
+}
+
+.ingest-result {
+  margin-top: 16px;
+}
+
+.ingest-result p {
+  margin: 4px 0;
+}
+
+.ingest-done {
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--ok-bg);
+  color: var(--ok-text);
+}
+
+.report-files h4 {
+  margin: 10px 0 2px;
+  font-size: 0.95rem;
+}
+
+.ingest-done ul {
+  margin: 2px 0;
+  padding-left: 20px;
+}
+
+.ingest-done details {
+  margin-top: 8px;
+}

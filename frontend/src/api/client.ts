@@ -1,6 +1,6 @@
 // Small fetch wrapper for the RAG API. URLs are relative: Vite's dev proxy (vite.config.ts) forwards them to uvicorn.
 
-import type { ChatRequest, ChatResponse, HealthResponse } from "./types";
+import type { ChatRequest, ChatResponse, HealthResponse, IngestJob } from "./types";
 
 /** The API answered with an error status; `detail` is its message (or a summary of FastAPI's 422 field errors). */
 export class ApiError extends Error {
@@ -73,6 +73,26 @@ export async function postChat(request: ChatRequest, signal?: AbortSignal): Prom
   });
   const body = await readJson(response);
   if (response.ok) return body as ChatResponse;
+  throw failure(response, body);
+}
+
+export type IngestStart = { kind: "started"; job: IngestJob } | { kind: "already-running"; jobId: string };
+
+/** POST /documents/ingest. A 409 is not an error here: it names the job that is already running, to follow instead. */
+export async function startIngest(signal?: AbortSignal): Promise<IngestStart> {
+  const response = await send("/documents/ingest", { method: "POST", signal });
+  const body = await readJson(response);
+  if (response.ok) return { kind: "started", job: body as IngestJob };
+  const runningId = (body as { job_id?: unknown } | undefined)?.job_id;
+  if (response.status === 409 && typeof runningId === "string") return { kind: "already-running", jobId: runningId };
+  throw failure(response, body);
+}
+
+/** GET /documents/ingest/{job_id}. A 404 means the server no longer knows the job (e.g. it was restarted). */
+export async function getIngestJob(jobId: string, signal?: AbortSignal): Promise<IngestJob> {
+  const response = await send(`/documents/ingest/${encodeURIComponent(jobId)}`, { signal });
+  const body = await readJson(response);
+  if (response.ok) return body as IngestJob;
   throw failure(response, body);
 }
 

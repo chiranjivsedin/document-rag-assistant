@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiError, ApiUnreachableError, errorDetail, getHealth, postChat } from "./client";
+import { ApiError, ApiUnreachableError, errorDetail, getHealth, getIngestJob, postChat, startIngest } from "./client";
 
 const OK = { status: "ok", llm_model: "gemma3:4b", embedding_model: "nomic-embed-text", problems: [] };
 const DOWN = {
@@ -84,6 +84,51 @@ describe("postChat", () => {
     const error = await postChat({ question: "Q?" }, controller.signal).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(ApiUnreachableError);
     expect((error as DOMException).name).toBe("AbortError");
+  });
+});
+
+describe("ingestion", () => {
+  const JOB = {
+    job_id: "abc",
+    status: "running",
+    started_at: "2026-10-29T10:15:00Z",
+    finished_at: null,
+    report: null,
+    error: null,
+  };
+
+  it("startIngest POSTs with no body and returns the new job on 202", async () => {
+    const fetch = respond(202, JOB);
+    expect(await startIngest()).toEqual({ kind: "started", job: JOB });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/documents/ingest");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+  });
+
+  it("startIngest turns a 409 into the running job to follow", async () => {
+    respond(409, { detail: "An ingestion job is already running.", job_id: "running-job" });
+    expect(await startIngest()).toEqual({ kind: "already-running", jobId: "running-job" });
+  });
+
+  it("startIngest throws for a 409 without a job id, and for other errors", async () => {
+    respond(409, { detail: "Conflict" });
+    await expect(startIngest()).rejects.toMatchObject({ status: 409, detail: "Conflict" });
+    respond(503, { detail: "Can't connect to the database." });
+    await expect(startIngest()).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("getIngestJob reads the job and escapes the id in the URL", async () => {
+    const fetch = respond(200, JOB);
+    expect(await getIngestJob("a/b")).toEqual(JOB);
+    expect((fetch.mock.calls[0] as unknown as [string])[0]).toBe("/documents/ingest/a%2Fb");
+  });
+
+  it("getIngestJob throws ApiError 404 for an unknown job", async () => {
+    respond(404, { detail: "Unknown ingestion job." });
+    const error = await getIngestJob("gone").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 404 });
   });
 });
 

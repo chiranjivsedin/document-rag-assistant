@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 
 import { HealthBanner } from "./components/HealthBanner";
 import { ChatPage } from "./features/chat/ChatPage";
+import { IngestPage } from "./features/ingest/IngestPage";
 
 // One tab per area of the app. The current tab lives in the URL hash (#chat, #documents, ...), so it survives a
 // reload and the built app is just index.html: no client-side routes can collide with API paths like /chat.
@@ -28,11 +29,18 @@ export const TABS = [
     id: "ingestion",
     label: "Ingestion",
     summary: "Index the documents folder and follow the job until it finishes.",
-    phase: "6C",
+    phase: null,
   },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+// Built sections. They stay mounted while another tab is open, so a pending answer, a running ingestion job's
+// polling and their results survive tab switches.
+const PAGES: Partial<Record<TabId, ComponentType>> = {
+  chat: ChatPage,
+  ingestion: IngestPage,
+};
 
 function tabFromHash(): TabId {
   const id = window.location.hash.slice(1);
@@ -71,18 +79,25 @@ export function App() {
         </nav>
       </header>
       <HealthBanner />
-      {/* Chat stays mounted while another tab is open, so its history and a pending answer survive tab switches. */}
-      <main
-        id="panel-chat"
-        role="tabpanel"
-        aria-labelledby="tab-chat"
-        className="panel"
-        hidden={current !== "chat"}
-      >
-        <h2>Chat</h2>
-        <p>{TABS[0].summary}</p>
-        <ChatPage />
-      </main>
+      {TABS.map((t) => {
+        const Page = PAGES[t.id];
+        return (
+          Page && (
+            <main
+              key={t.id}
+              id={`panel-${t.id}`}
+              role="tabpanel"
+              aria-labelledby={`tab-${t.id}`}
+              className="panel"
+              hidden={t.id !== current}
+            >
+              <h2>{t.label}</h2>
+              <p>{t.summary}</p>
+              <Page />
+            </main>
+          )
+        );
+      })}
       {tab.phase && (
         <main id={`panel-${tab.id}`} role="tabpanel" aria-labelledby={`tab-${tab.id}`} className="panel">
           <h2>{tab.label}</h2>

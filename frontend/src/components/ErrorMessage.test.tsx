@@ -13,11 +13,16 @@ describe("describeError", () => {
     expect(describeError(new ApiError(status, detail))).toEqual({ title, detail });
   });
 
-  it("never shows a 500's detail (the server keeps it in its log)", () => {
+  it("points to the server log for the API's generic 500", () => {
     expect(describeError(new ApiError(500, "Internal server error."))).toEqual({
       title: "Something went wrong on the server",
       detail: "The details are in the API server's log.",
     });
+  });
+
+  it("shows a deliberate 500 message, such as a missing documents folder", () => {
+    const detail = "The documents folder (DOCUMENTS_DIR) doesn't exist on the server.";
+    expect(describeError(new ApiError(500, detail))).toEqual({ title: "Something went wrong on the server", detail });
   });
 
   it("explains an unreachable API", () => {

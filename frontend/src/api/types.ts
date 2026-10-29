@@ -7,6 +7,25 @@ export interface HealthResponse {
   problems: string[]; // one plain-English line per problem; empty when status is "ok"
 }
 
+/** What one ingestion run did; each list holds paths relative to the documents folder. */
+export interface IngestReport {
+  added: string[];
+  updated: string[];
+  unchanged: string[];
+  removed: string[];
+  no_text: string[]; // files with no extractable text (e.g. scanned PDFs), skipped
+  chunks_stored: number;
+}
+
+export interface IngestJob {
+  job_id: string;
+  status: "running" | "succeeded" | "failed";
+  started_at: string; // ISO 8601, UTC
+  finished_at: string | null;
+  report: IngestReport | null; // set when status is "succeeded"
+  error: string | null; // set when status is "failed"
+}
+
 export interface ChatRequest {
   question: string; // 1–2000 characters after trimming
   product?: string; // optional filters; leave out for "no filter"
