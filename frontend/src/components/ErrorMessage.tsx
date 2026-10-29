@@ -1,4 +1,5 @@
 import { ApiError, ApiUnreachableError } from "../api/client";
+import { AlertIcon } from "./Icons";
 
 const GENERIC_500 = "Internal server error."; // what src/rag/api/app.py sends for unexpected errors
 
@@ -36,8 +37,11 @@ export function describeError(error: unknown): ErrorText {
 
 export function ErrorMessage({ error }: { error: ErrorText }) {
   return (
-    <div className="error-message" role="alert">
-      <strong>{error.title}.</strong> {error.detail}
+    <div className="banner banner-error" role="alert">
+      <AlertIcon />
+      <p className="banner-body">
+        <strong>{error.title}.</strong> {error.detail}
+      </p>
     </div>
   );
 }

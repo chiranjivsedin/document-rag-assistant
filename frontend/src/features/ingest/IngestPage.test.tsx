@@ -68,9 +68,16 @@ describe("IngestPage: a job that runs to the end", () => {
     await clickIndex();
 
     const result = await screen.findByText(/Indexing finished in 10.7 s/);
-    expect(result.parentElement!.textContent).toContain(
-      "1 added, 1 updated, 2 unchanged, 1 removed, 1 with no text · 42 chunks stored.",
-    );
+    expect(result.textContent).toBe("Indexing finished in 10.7 s.");
+    const stats = screen.getByLabelText("Indexing results");
+    expect([...stats.querySelectorAll("div")].map((pair) => pair.textContent)).toEqual([
+      "Added1",
+      "Updated1",
+      "Unchanged2",
+      "Removed1",
+      "No text1",
+      "Chunks stored42",
+    ]);
     expect(screen.getByRole("heading", { name: "Added (1)" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Updated (1)" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Removed (1)" })).toBeTruthy();
@@ -106,7 +113,7 @@ describe("IngestPage: a job that runs to the end", () => {
     const status = await screen.findByText("Indexing…");
     const panel = status.closest("[role=status]")!;
     expect(panel.textContent).toMatch(/\d+ s/); // elapsed since started_at
-    expect(panel.textContent).toContain("Job 3f9c0a1b · status checked every 0.01 s.");
+    expect(panel.textContent).toContain("Job 3f9c0a1b, status checked every 0.01 s.");
     expect(indexButton().disabled).toBe(true);
   });
 

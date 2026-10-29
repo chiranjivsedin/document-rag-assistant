@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { ChatRequest, ChatResponse } from "../../api/types";
 import { ElapsedTimer } from "../../components/ElapsedTimer";
 import { ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
+import { CheckIcon, CopyIcon, InfoIcon, RetryIcon, SparkIcon } from "../../components/Icons";
 import { citedNumbers, splitCitations } from "./citations";
-import { SourceList, sourceElementId } from "./SourceList";
+import { previewElementId, revealSource, SourceList } from "./SourceList";
 
 export type Turn = { id: number; request: ChatRequest; startedAt: number } & (
   | { status: "waiting" }
@@ -20,58 +21,80 @@ interface Props {
   canRetry: boolean;
 }
 
-function filtersLabel(request: ChatRequest): string {
-  const parts = [
-    request.product && `product ${request.product}`,
-    request.version && `version ${request.version}`,
-    `top ${request.k ?? 5}`,
-  ];
-  return parts.filter(Boolean).join(" · ");
+/** The search scope a question was asked with, as chips. */
+function scopeChips(request: ChatRequest): string[] {
+  const chips = [request.product && `product ${request.product}`, request.version && `version ${request.version}`];
+  const filters = chips.filter((chip): chip is string => Boolean(chip));
+  return [...(filters.length ? filters : ["all documents"]), `top ${request.k ?? 5}`];
+}
+
+export function turnElementId(id: number): string {
+  return `turn-${id}`;
 }
 
 /** One question and what came back for it: waiting, an answer with sources, an error, or cancelled. */
 export function ChatTurn({ turn, onCancel, onRetry, canRetry }: Props) {
   const retry = (
-    <button type="button" onClick={() => onRetry(turn.request)} disabled={!canRetry}>
+    <button type="button" className="button button-ghost" onClick={() => onRetry(turn.request)} disabled={!canRetry}>
+      <RetryIcon />
       Ask again
     </button>
   );
 
   return (
-    <article className="turn" aria-label={`Question: ${turn.request.question}`}>
-      <div className="turn-question">
-        <p>{turn.request.question}</p>
-        <span className="turn-filters">{filtersLabel(turn.request)}</span>
-      </div>
+    <article className="turn" id={turnElementId(turn.id)} aria-label={`Question: ${turn.request.question}`}>
+      <header className="turn-head">
+        <h2 className="turn-question">{turn.request.question}</h2>
+        <ul className="scope" aria-label="Search scope">
+          {scopeChips(turn.request).map((chip) => (
+            <li key={chip} className="tag">
+              {chip}
+            </li>
+          ))}
+        </ul>
+      </header>
 
       {turn.status === "waiting" && (
-        <div className="turn-waiting" role="status">
-          <span>
-            Waiting for the answer… <ElapsedTimer startedAt={turn.startedAt} />
-          </span>
-          <span className="hint">
-            Answers can take a minute or more on a laptop CPU.
-          </span>
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
+        <div className="waiting" role="status">
+          <div className="waiting-row">
+            <span className="dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span>
+              Searching your documents and writing the answer… <ElapsedTimer startedAt={turn.startedAt} />
+            </span>
+            <button type="button" className="button button-ghost button-small" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+          <div className="skeleton" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <p className="hint">Answers can take a minute or more on a laptop CPU.</p>
         </div>
       )}
 
       {turn.status === "answered" && <Answer turnId={turn.id} response={turn.response} />}
 
       {turn.status === "failed" && (
-        <div className="turn-actions">
+        <div className="turn-problem">
           <ErrorMessage error={turn.error} />
           {retry}
         </div>
       )}
 
       {turn.status === "cancelled" && (
-        <div className="turn-actions">
-          <p className="hint">
-            Stopped waiting. The server may still finish this answer in the background, so the next question can
-            take a little longer.
+        <div className="turn-problem">
+          <p className="banner banner-muted">
+            <InfoIcon />
+            <span className="banner-body">
+              Stopped waiting. The server may still finish this answer in the background, so the next question can
+              take a little longer.
+            </span>
           </p>
           {retry}
         </div>
@@ -80,64 +103,111 @@ export function ChatTurn({ turn, onCancel, onRetry, canRetry }: Props) {
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // clipboard not available (insecure context, permissions): nothing to do
+    }
+  };
+  return (
+    <button type="button" className="button button-ghost button-small" onClick={copy}>
+      {copied ? <CheckIcon /> : <CopyIcon />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 function Answer({ turnId, response }: { turnId: number; response: ChatResponse }) {
-  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [revealRequest, setRevealRequest] = useState(0); // counts selections, so each one scrolls and focuses
+  // Citations map to the numbers the API gave the sources (they match the [n] in the prompt), not to list positions.
+  const sourceNumbers = useMemo(() => new Set(response.sources.map((source) => source.number)), [response.sources]);
+  const parts = useMemo(() => splitCitations(response.answer, sourceNumbers), [response.answer, sourceNumbers]);
+  const cited = useMemo(() => citedNumbers(response.answer, sourceNumbers), [response.answer, sourceNumbers]);
+  const fileNames = useMemo(
+    () => new Map(response.sources.map((source) => [source.number, source.source?.split("/").pop() ?? ""])),
+    [response.sources],
+  );
+
+  // After the selected passage has rendered, bring it into view and move focus to it.
+  useEffect(() => {
+    if (revealRequest > 0 && selected !== null) revealSource(turnId, selected);
+  }, [revealRequest, selected, turnId]);
+
   const seconds = (response.elapsed_ms / 1000).toFixed(1);
+  const meta = `Answered by ${response.model} in ${seconds} s`;
 
   if (response.no_answer) {
     return (
       <div className="answer answer-none">
-        <p>
-          <strong>No answer found in the documents.</strong> {response.answer}
-        </p>
+        <div className="answer-none-head">
+          <InfoIcon />
+          <p className="answer-title">No answer found in the documents.</p>
+        </div>
+        <p>{response.answer}</p>
         <p className="hint">
           Try different wording, remove the product or version filter, or check that the documents for that version
           are indexed.
         </p>
-        <p className="answer-meta">
-          {response.model} · {seconds} s
-        </p>
+        <p className="answer-meta">{meta}</p>
       </div>
     );
   }
 
-  const showSource = (number: number) => {
-    setHighlighted(number);
-    const element = document.getElementById(sourceElementId(turnId, number));
-    element?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-    element?.focus({ preventScroll: true });
+  const select = (number: number) => {
+    setSelected(number);
+    setRevealRequest((n) => n + 1); // reveal even when the same source is chosen again
   };
 
   return (
-    <div className="answer">
-      <p className="answer-text">
-        {splitCitations(response.answer, response.sources.length).map((part, index) =>
-          "cite" in part ? (
-            <button
-              key={index}
-              type="button"
-              className="citation"
-              onClick={() => showSource(part.cite)}
-              aria-label={`Show source ${part.cite}`}
-            >
-              [{part.cite}]
-            </button>
-          ) : (
-            <span key={index}>{part.text}</span>
-          ),
-        )}
-      </p>
-      <p className="answer-meta">
-        {response.model} · {seconds} s
-      </p>
+    <>
       {response.sources.length > 0 && (
         <SourceList
           turnId={turnId}
           sources={response.sources}
-          cited={citedNumbers(response.answer, response.sources.length)}
-          highlighted={highlighted}
+          cited={cited}
+          selected={selected}
+          onSelect={select}
         />
       )}
-    </div>
+      <section className="answer" aria-label="Answer">
+        <div className="section-head">
+          <h3>
+            <SparkIcon />
+            Answer
+          </h3>
+        </div>
+        <p className="answer-text">
+          {parts.map((part, index) =>
+            "cite" in part ? (
+              <button
+                key={index}
+                type="button"
+                className={part.cite === selected ? "cite cite-active" : "cite"}
+                onClick={() => select(part.cite)}
+                aria-label={`Show source ${part.cite}`}
+                aria-controls={previewElementId(turnId)}
+                title={fileNames.get(part.cite)}
+              >
+                <span className="cite-bracket">[</span>
+                {part.cite}
+                <span className="cite-bracket">]</span>
+              </button>
+            ) : (
+              <span key={index}>{part.text}</span>
+            ),
+          )}
+        </p>
+        <footer className="answer-foot">
+          <span className="answer-meta">{meta}</span>
+          <CopyButton text={response.answer} />
+        </footer>
+      </section>
+    </>
   );
 }
