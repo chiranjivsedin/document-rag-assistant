@@ -240,6 +240,86 @@ describe("ChatPage: citations and sources", () => {
     expect(previewTags()).toContain("retrieved, not cited");
   });
 
+  it("every citation selects exactly its own source (regression)", async () => {
+    answer(ANSWERED);
+    render(<ChatPage />);
+    const user = await ask("Q?");
+    await screen.findByText(/See also/);
+    for (const citation of screen.getAllByRole("button", { name: /^Show source \d+$/ })) {
+      const number = Number(citation.textContent!.replace(/\D/g, ""));
+      await user.click(citation);
+      const selected = sourceCards().filter((card) => card.getAttribute("aria-current") === "true");
+      expect(selected).toHaveLength(1);
+      expect(within(selected[0]).getByRole("button").textContent).toContain(String(number));
+      expect(screen.getByLabelText(`Source ${number}`).textContent).toContain(ANSWERED.sources[number - 1].excerpt);
+    }
+  });
+
+  it("makes grouped citations like [1, 2] and [1-3] clickable and maps each to its source (regression)", async () => {
+    answer({ ...ANSWERED, answer: "Deprecated [1, 2]. Removed [1-3]. Unknown [2, 7]." });
+    render(<ChatPage />);
+    const user = await ask("Q?");
+    await screen.findByText(/Unknown/);
+    const citations = screen.getAllByRole("button", { name: /^Show source \d+$/ });
+    expect(citations.map((c) => c.getAttribute("aria-label"))).toEqual([
+      "Show source 1", "Show source 2", "Show source 1", "Show source 2", "Show source 3", "Show source 2",
+    ]);
+    expect(screen.getByText(/Unknown/).closest("p")!.textContent).toContain("[7]"); // no source 7: stays text
+    await user.click(citations[4]);
+    expect(screen.getByLabelText("Source 3").textContent).toContain("Unrelated passage.");
+  });
+
+  it.each([
+    ["Enter", "{Enter}"],
+    ["Space", " "],
+  ])("opens the source from the keyboard with %s and moves focus to the passage (regression)", async (_name, keys) => {
+    answer(ANSWERED);
+    render(<ChatPage />);
+    const user = await ask("Q?");
+    await screen.findByText(/See also/);
+    screen.getAllByRole("button", { name: "Show source 2" })[0].focus();
+    await user.keyboard(keys);
+    expect(sourceCards()[1].getAttribute("aria-current")).toBe("true");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Source 2")));
+  });
+
+  it("scrolls the Sources block into view on every activation, including the same citation again (regression)", async () => {
+    answer(ANSWERED);
+    const scrolled: Element[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    try {
+      render(<ChatPage />);
+      const user = await ask("Q?");
+      await screen.findByText(/See also/);
+      const sources = screen.getByRole("region", { name: "Sources" });
+      scrolled.length = 0; // ignore the scroll to the new question
+      const citation = screen.getAllByRole("button", { name: "Show source 1" })[0];
+      await user.click(citation);
+      await waitFor(() => expect(scrolled).toContain(sources));
+      scrolled.length = 0;
+      await user.click(citation);
+      await waitFor(() => expect(scrolled).toContain(sources));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("points each citation at the passage it opens and names the file on hover", async () => {
+    answer(ANSWERED);
+    render(<ChatPage />);
+    const user = await ask("Q?");
+    await screen.findByText(/See also/);
+    const citation = screen.getAllByRole("button", { name: "Show source 2" })[0];
+    const target = citation.getAttribute("aria-controls")!;
+    expect(document.getElementById(target)).not.toBeNull(); // the hint before anything is selected
+    expect(citation.getAttribute("title")).toBe("notes.pdf");
+    await user.click(citation);
+    expect(document.getElementById(target)).toBe(screen.getByLabelText("Source 2"));
+  });
+
   it("copies the answer text", async () => {
     answer(ANSWERED);
     render(<ChatPage />);

@@ -955,6 +955,9 @@ textarea {
 
 .sources {
   margin-top: 22px;
+  /* When a citation reveals its source, keep the block clear of the sticky top bar and the composer dock. */
+  scroll-margin-top: 72px;
+  scroll-margin-bottom: 184px;
 }
 
 .source-strip {
@@ -986,6 +989,12 @@ textarea {
   border: 1px solid var(--border);
   background: var(--surface);
   transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+/* Inset ring: the strip scrolls horizontally, so an outside outline would be clipped. */
+.source-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .source-card:hover {
@@ -1135,6 +1144,13 @@ textarea {
 
 .cite:hover,
 .cite-active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.cite:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   background: var(--accent);
   color: var(--on-accent);
 }
@@ -1791,6 +1807,10 @@ textarea {
 
   .dock {
     padding: 12px 0 10px;
+  }
+
+  .sources {
+    scroll-margin-bottom: 156px; /* the docked composer is shorter on small screens */
   }
 
   .grid-2 {

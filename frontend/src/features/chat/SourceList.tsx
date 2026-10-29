@@ -9,6 +9,31 @@ export function previewElementId(turnId: number): string {
   return `turn-${turnId}-preview`;
 }
 
+export function sourcesElementId(turnId: number): string {
+  return `turn-${turnId}-sources`;
+}
+
+/**
+ * Bring a selected source into view: scroll the card strip sideways to its card, scroll the page so the whole
+ * Sources block (cards and passage) is visible (its scroll-margin in styles.css keeps it clear of the sticky top
+ * bar and composer), then move focus to the passage.
+ */
+export function revealSource(turnId: number, number: number): void {
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+  const behavior: ScrollBehavior = reduceMotion ? "auto" : "smooth";
+
+  const card = document.getElementById(sourceElementId(turnId, number));
+  const strip = card?.parentElement;
+  if (card && strip) {
+    const c = card.getBoundingClientRect();
+    const s = strip.getBoundingClientRect();
+    if (c.left < s.left) strip.scrollBy?.({ left: c.left - s.left - 8, behavior });
+    else if (c.right > s.right) strip.scrollBy?.({ left: c.right - s.right + 8, behavior });
+  }
+  document.getElementById(sourcesElementId(turnId))?.scrollIntoView?.({ block: "nearest", behavior });
+  document.getElementById(previewElementId(turnId))?.focus({ preventScroll: true });
+}
+
 /** Split a source path into its folders (muted) and file name (emphasised). */
 function splitPath(path: string | null): [string, string] {
   const value = path ?? "unknown source";
@@ -47,7 +72,7 @@ export function SourceList({ turnId, sources, cited, selected, onSelect }: Props
   const current = sources.find((source) => source.number === selected) ?? null;
 
   return (
-    <section className="sources" aria-label="Sources">
+    <section className="sources" id={sourcesElementId(turnId)} aria-label="Sources">
       <div className="section-head">
         <h3>Sources</h3>
         <span>
@@ -105,7 +130,10 @@ export function SourceList({ turnId, sources, cited, selected, onSelect }: Props
           <blockquote className="excerpt">{current.excerpt}</blockquote>
         </div>
       ) : (
-        <p className="sources-hint">Select a source or a citation to read the passage.</p>
+        // Same id as the preview, so a citation's aria-controls always points at an element.
+        <p className="sources-hint" id={previewElementId(turnId)}>
+          Select a source or a citation to read the passage.
+        </p>
       )}
     </section>
   );

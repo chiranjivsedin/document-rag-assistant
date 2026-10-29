@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { ChatRequest, ChatResponse } from "../../api/types";
 import { ElapsedTimer } from "../../components/ElapsedTimer";
 import { ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
 import { CheckIcon, CopyIcon, InfoIcon, RetryIcon, SparkIcon } from "../../components/Icons";
 import { citedNumbers, splitCitations } from "./citations";
-import { previewElementId, SourceList, sourceElementId } from "./SourceList";
+import { previewElementId, revealSource, SourceList } from "./SourceList";
 
 export type Turn = { id: number; request: ChatRequest; startedAt: number } & (
   | { status: "waiting" }
@@ -124,6 +124,21 @@ function CopyButton({ text }: { text: string }) {
 
 function Answer({ turnId, response }: { turnId: number; response: ChatResponse }) {
   const [selected, setSelected] = useState<number | null>(null);
+  const [revealRequest, setRevealRequest] = useState(0); // counts selections, so each one scrolls and focuses
+  // Citations map to the numbers the API gave the sources (they match the [n] in the prompt), not to list positions.
+  const sourceNumbers = useMemo(() => new Set(response.sources.map((source) => source.number)), [response.sources]);
+  const parts = useMemo(() => splitCitations(response.answer, sourceNumbers), [response.answer, sourceNumbers]);
+  const cited = useMemo(() => citedNumbers(response.answer, sourceNumbers), [response.answer, sourceNumbers]);
+  const fileNames = useMemo(
+    () => new Map(response.sources.map((source) => [source.number, source.source?.split("/").pop() ?? ""])),
+    [response.sources],
+  );
+
+  // After the selected passage has rendered, bring it into view and move focus to it.
+  useEffect(() => {
+    if (revealRequest > 0 && selected !== null) revealSource(turnId, selected);
+  }, [revealRequest, selected, turnId]);
+
   const seconds = (response.elapsed_ms / 1000).toFixed(1);
   const meta = `Answered by ${response.model} in ${seconds} s`;
 
@@ -146,11 +161,7 @@ function Answer({ turnId, response }: { turnId: number; response: ChatResponse }
 
   const select = (number: number) => {
     setSelected(number);
-    // Wait for the preview to render, then bring the card and the passage into view.
-    setTimeout(() => {
-      document.getElementById(sourceElementId(turnId, number))?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-      document.getElementById(previewElementId(turnId))?.focus({ preventScroll: true });
-    }, 0);
+    setRevealRequest((n) => n + 1); // reveal even when the same source is chosen again
   };
 
   return (
@@ -159,7 +170,7 @@ function Answer({ turnId, response }: { turnId: number; response: ChatResponse }
         <SourceList
           turnId={turnId}
           sources={response.sources}
-          cited={citedNumbers(response.answer, response.sources.length)}
+          cited={cited}
           selected={selected}
           onSelect={select}
         />
@@ -172,7 +183,7 @@ function Answer({ turnId, response }: { turnId: number; response: ChatResponse }
           </h3>
         </div>
         <p className="answer-text">
-          {splitCitations(response.answer, response.sources.length).map((part, index) =>
+          {parts.map((part, index) =>
             "cite" in part ? (
               <button
                 key={index}
@@ -180,6 +191,8 @@ function Answer({ turnId, response }: { turnId: number; response: ChatResponse }
                 className={part.cite === selected ? "cite cite-active" : "cite"}
                 onClick={() => select(part.cite)}
                 aria-label={`Show source ${part.cite}`}
+                aria-controls={previewElementId(turnId)}
+                title={fileNames.get(part.cite)}
               >
                 <span className="cite-bracket">[</span>
                 {part.cite}
