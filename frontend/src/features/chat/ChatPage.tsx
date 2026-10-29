@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type Keyb
 import { postChat } from "../../api/client";
 import type { ChatRequest } from "../../api/types";
 import { describeError } from "../../components/ErrorMessage";
-import { AlertIcon, ArrowUpIcon, IndexIcon, LogoMark, SparkIcon, TagIcon } from "../../components/Icons";
+import { AlertIcon, ArrowUpIcon, IndexIcon, SparkIcon, TagIcon } from "../../components/Icons";
 import { ChatTurn, turnElementId, type Turn } from "./ChatTurn";
 
 const MAX_QUESTION = 2000; // same limits as ChatRequest in src/rag/api/schemas.py
@@ -205,7 +205,6 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
     return (
       <div className="chat-home">
         <div className="home-hero">
-          <LogoMark size={48} />
           <h2>What would you like to know?</h2>
           <p>
             Ask about versions, release notes and deprecated features. Every answer cites the passages it came from.
