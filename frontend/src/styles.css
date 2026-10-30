@@ -379,9 +379,15 @@ textarea {
   color: var(--accent);
 }
 
+/* The session list takes the space left above the status card and scrolls inside it. Without its own overflow,
+   a long list ran on behind the status card and nothing scrolled. The minimum keeps a few questions in view; on a
+   very short window the whole sidebar scrolls instead. */
 .recent {
   margin-top: 18px;
-  min-height: 0;
+  min-height: 132px; /* the heading and about three questions */
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-heading {
@@ -398,7 +404,12 @@ textarea {
   padding: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  align-content: start;
   gap: 1px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .recent-item {

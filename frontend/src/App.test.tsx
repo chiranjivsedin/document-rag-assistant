@@ -116,6 +116,18 @@ describe("App: chat across the shell", () => {
     expect(window.location.hash).toBe("#chat");
   });
 
+  it("lists every question of a long session, newest first (regression)", async () => {
+    // Only the last 8 used to be listed, so older questions couldn't be reached from the sidebar.
+    render(<App />);
+    const user = userEvent.setup();
+    for (let n = 1; n <= 10; n++) await askQuestion(user, `Q${n}?`);
+    const sidebar = screen.getByRole("complementary", { name: "Main menu" });
+    const listed = within(sidebar)
+      .getAllByRole("button", { name: /^Q\d+\?$/ })
+      .map((item) => item.textContent);
+    expect(listed).toEqual(["Q10?", "Q9?", "Q8?", "Q7?", "Q6?", "Q5?", "Q4?", "Q3?", "Q2?", "Q1?"]);
+  });
+
   it("New chat starts an empty conversation and clears the session list", async () => {
     render(<App />);
     const user = userEvent.setup();
