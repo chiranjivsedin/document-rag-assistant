@@ -240,6 +240,22 @@ describe("ChatPage: citations and sources", () => {
     expect(previewTags()).toContain("retrieved, not cited");
   });
 
+  it("shows the whole passage in the preview, not a shortened start (regression)", async () => {
+    // The API used to send only the first 300 characters, so previews stopped mid-sentence.
+    const passage =
+      "# Acme DMS 1.0 Deprecated Features\n\n" +
+      "- The Classic Desktop client is deprecated in 1.0 and will be removed in 2.0. Use Acme Web instead.\n".repeat(4) +
+      "- Basic authentication for the REST API is deprecated in 1.0. Use token authentication instead.";
+    const sources = [{ ...ANSWERED.sources[0], excerpt: passage }];
+    answer({ ...ANSWERED, answer: "Basic authentication is deprecated in 1.0 [1].", sources });
+    render(<ChatPage />);
+    const user = await ask("Q?");
+    await user.click(await screen.findByRole("button", { name: "Show source 1" }));
+    const excerpt = screen.getByLabelText("Source 1").querySelector("blockquote")!;
+    expect(passage.length).toBeGreaterThan(300);
+    expect(excerpt.textContent).toBe(passage);
+  });
+
   it("every citation selects exactly its own source (regression)", async () => {
     answer(ANSWERED);
     render(<ChatPage />);

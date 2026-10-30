@@ -23,6 +23,19 @@ def test_ollama_embeddings_use_settings():
     assert embeddings.base_url == "http://127.0.0.1:11434"
 
 
+def test_models_stay_loaded_between_questions():
+    # Ollama's default unloads a model after 5 idle minutes; reloading gemma3:4b added 15-29 s to the next answer.
+    settings = get_settings({"OLLAMA_KEEP_ALIVE_MINUTES": "45"})
+    assert get_chat_model(settings).keep_alive == 45 * 60
+    assert get_embeddings(settings).keep_alive == 45 * 60
+
+
+def test_keep_alive_minus_one_keeps_models_loaded_until_ollama_stops():
+    settings = get_settings({"OLLAMA_KEEP_ALIVE_MINUTES": "-1"})
+    assert get_chat_model(settings).keep_alive == -1
+    assert get_embeddings(settings).keep_alive == -1
+
+
 def test_unknown_providers_are_rejected():
     settings = get_settings({})
     with pytest.raises(ValueError, match="Unsupported LLM provider"):

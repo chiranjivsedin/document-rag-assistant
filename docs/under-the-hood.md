@@ -153,7 +153,7 @@ GET /documents/ingest/{job_id}
 - Endpoints are plain `def` functions. FastAPI runs them in a thread pool, so a 30-second answer doesn't block other requests, and the vector store's synchronous calls work as in the scripts.
 - `get_services()` builds the store and chat model on the first request that needs them, under a lock, and reuses them afterwards. A failed build isn't kept, so the next request tries again. This is also why the server starts, and `/health` answers, while Docker or Ollama is down.
 - `_backend_failure()` turns exceptions into responses: `providers.unavailable_errors()` → 503 "Ollama or the database stopped responding", `providers.model_errors()` → 502 with Ollama's reason. Anything else becomes a generic 500; the details go only to the server log.
-- `_source()` turns each passage into a `ChatSource`: its number, path, product, version, doc_type, page, distance and the first 300 characters.
+- `_source()` turns each passage into a `ChatSource`: its number, path, product, version, doc_type, page, distance and the whole passage text as `excerpt`.
 
 ### `api/schemas.py`: the request and response bodies
 

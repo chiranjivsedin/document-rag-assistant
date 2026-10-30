@@ -176,12 +176,37 @@ def test_chat_empty_filters_mean_no_filter(checks):
     assert store.searches[0]["filter"] is None
 
 
-def test_chat_excerpt_is_shortened(checks):
-    long_passage = [(Document(page_content="x" * 1000, metadata={"source": "a.md"}), 0.1)]
-    client, _ = make_client(results=long_passage)
+def test_chat_excerpt_is_the_whole_passage(checks):
+    # Previews used to stop after 300 characters, mid-sentence, so the evidence couldn't be checked.
+    passage = "Basic authentication for the REST API is deprecated in 1.0. " * 16 + "Use token authentication instead."
+    client, _ = make_client(results=[(Document(page_content=passage, metadata={"source": "a.md"}), 0.1)])
     source = client.post("/chat", json={"question": "Q?"}).json()["sources"][0]
-    assert source["excerpt"] == "x" * 300
+    assert source["excerpt"] == passage
     assert source["product"] is None and source["page"] is None
+
+
+def test_chat_citation_only_reply_is_no_answer(checks):
+    client, _ = make_client(reply="[1]")
+    body = client.post("/chat", json={"question": "Which version added a mobile app?"}).json()
+    assert body["answer"] == NO_ANSWER
+    assert body["no_answer"] is True
+    assert body["sources"] == []
+
+
+def test_chat_not_stated_reply_is_no_answer(checks):
+    # On-topic passages without the fact: the model said so in its own words instead of the exact reply.
+    client, _ = make_client(reply="The release date of 2.0 is not stated in the passages [1].")
+    body = client.post("/chat", json={"question": "What is the release date of 2.0?", "version": "2.0"}).json()
+    assert body["answer"] == NO_ANSWER
+    assert body["no_answer"] is True
+    assert body["sources"] == []
+
+
+def test_chat_repeated_citations_are_collapsed(checks):
+    client, _ = make_client(reply="Classic Desktop is deprecated [1][1].")
+    body = client.post("/chat", json={"question": "What is deprecated?"}).json()
+    assert body["answer"] == "Classic Desktop is deprecated [1]."
+    assert [source["number"] for source in body["sources"]] == [1, 2]
 
 
 def test_chat_with_nothing_retrieved(checks):

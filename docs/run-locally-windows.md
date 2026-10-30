@@ -140,7 +140,7 @@ Invoke-RestMethod "http://127.0.0.1:8000/documents/ingest/$($job.job_id)"
 ```
 
 - **`/health`** returns `status`, the two model names and a list of `problems` (empty when all is well).
-- **`/chat`** takes `question` (required), `product`, `version` and `k` (1–20, default 5). It returns `answer`, `no_answer` (true for "I don't know"), and `sources`, each with a `number` matching the `[n]` in the answer and a short `excerpt`. The whole answer arrives at once, after the same 15–40 seconds.
+- **`/chat`** takes `question` (required), `product`, `version` and `k` (1–20, default 5). It returns `answer`, `no_answer` (true for "I don't know"), and `sources`, each with a `number` matching the `[n]` in the answer and an `excerpt` (the whole passage the model was given). The whole answer arrives at once, after the same 15–40 seconds.
 - **`/documents/ingest`** always indexes `DOCUMENTS_DIR`; it doesn't take a folder from the request. It answers straight away with a `job_id`. Checking that job shows `running`, then `succeeded` with the same counts `ingest.py` prints, or `failed` with a reason. Only one job runs at a time: starting a second one returns an error naming the running job.
 - **Job history is kept in memory only.** After you stop or restart the server, old job ids are unknown (404), and a job that was running when you stopped it never finishes. Files it had already indexed stay indexed; run ingestion again to finish the rest.
 - **Errors** come back as `{"detail": "..."}` and PowerShell shows them in red: 422 for a bad request (for example `k` above 20), 503 when Ollama or the database is down (same messages as step 9 below), 502 when the model itself fails (for example not enough memory), 500 for anything unexpected.

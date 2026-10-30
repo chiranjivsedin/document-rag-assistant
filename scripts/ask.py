@@ -9,8 +9,9 @@ import sys
 import time
 
 from rag.config import get_settings
+from rag.generation.citations import has_no_words, only_says_not_stated
 from rag.generation.llm import stream_answer
-from rag.generation.prompts import source_label
+from rag.generation.prompts import NO_ANSWER, source_label
 from rag.health import check_services
 from rag.retrieval.search import retrieve
 from rag.service import build_services, sources_to_show
@@ -38,6 +39,9 @@ def main() -> int:
         print(piece, end="", flush=True)  # show the answer as the model writes it
         text += piece
     print()
+    if has_no_words(text) or only_says_not_stated(text):  # same rules as the API's answer()
+        text = NO_ANSWER
+        print(text)
 
     sources = sources_to_show(text, docs)
     if sources:

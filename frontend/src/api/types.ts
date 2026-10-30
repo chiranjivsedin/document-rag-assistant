@@ -41,7 +41,7 @@ export interface ChatSource {
   doc_type: string | null;
   page: number | null;
   distance: number; // cosine distance: 0 = same meaning, larger = less related
-  excerpt: string; // first 300 characters of the passage
+  excerpt: string; // the whole passage the model was given
 }
 
 export interface ChatResponse {

@@ -1,3 +1,4 @@
+import pytest
 from langchain_core.documents import Document
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
@@ -40,6 +41,18 @@ def test_prompt_restricts_model_to_the_passages():
     assert human.content.endswith("Question: Q?")
 
 
+def test_prompt_asks_for_worded_supported_answers_with_exact_citations():
+    system = ANSWER_PROMPT.invoke({"context": "[1] (x)\ntext", "question": "Q?"}).to_messages()[0].content
+    assert "A citation alone is never an answer" in system  # "[1]" came back as a whole answer
+    assert "Only state what the passages say" in system  # claims beyond the passages
+    assert "say which version each fact applies to" in system  # facts from different versions mixed up
+    assert "Cite only the passages that state that fact" in system  # [1][2] where [2] says nothing about it
+    assert "[2][3]" not in system  # the old example invited stacked citations
+    # The "I don't know" reply must stay exact (no_answer and hidden sources depend on it), so it carries no
+    # citation even though every other sentence must have one.
+    assert f"reply exactly this, with no citation: {NO_ANSWER}" in system
+
+
 def test_answer_sends_passages_and_returns_reply_with_sources():
     model = RecordingModel(responses=["  Classic Desktop is deprecated [1].  "], seen=[])
     result = answer("What is deprecated?", DOCS, model)
@@ -47,6 +60,22 @@ def test_answer_sends_passages_and_returns_reply_with_sources():
     assert result.sources == DOCS
     sent = model.seen[0].to_messages()[1].content
     assert "Classic Desktop is deprecated." in sent and "Question: What is deprecated?" in sent
+
+
+@pytest.mark.parametrize("reply", ["[1]", "[1], [2]", " [2]. ", ""])
+def test_a_reply_without_words_becomes_the_no_answer_reply(reply):
+    result = answer("Which version added a mobile app?", DOCS, FakeListChatModel(responses=[reply]))
+    assert result.text == NO_ANSWER
+
+
+def test_a_reply_that_only_says_the_passages_lack_the_answer_becomes_the_no_answer_reply():
+    model = FakeListChatModel(responses=["The release date of 2.0 is not stated in the passages [1]."])
+    assert answer("What is the release date of 2.0?", DOCS, model).text == NO_ANSWER
+
+
+def test_answer_collapses_repeated_citations():
+    result = answer("What is deprecated?", DOCS, FakeListChatModel(responses=["Classic Desktop is deprecated [1][1]."]))
+    assert result.text == "Classic Desktop is deprecated [1]."
 
 
 def test_no_passages_means_no_model_call():

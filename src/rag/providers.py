@@ -29,7 +29,8 @@ def get_chat_model(settings: Settings) -> BaseChatModel:
         from langchain_ollama import ChatOllama
 
         # temperature 0: answers about documentation should be consistent, not creative
-        return ChatOllama(model=settings.llm_model, base_url=settings.ollama_base_url, temperature=0)
+        return ChatOllama(model=settings.llm_model, base_url=settings.ollama_base_url, temperature=0,
+                          keep_alive=_keep_alive_seconds(settings))
     raise ValueError(f"Unsupported LLM provider: {settings.llm_provider!r}")
 
 
@@ -37,8 +38,16 @@ def get_embeddings(settings: Settings) -> Embeddings:
     if settings.embedding_provider == "ollama":
         from langchain_ollama import OllamaEmbeddings
 
-        return OllamaEmbeddings(model=settings.embedding_model, base_url=settings.ollama_base_url)
+        return OllamaEmbeddings(model=settings.embedding_model, base_url=settings.ollama_base_url,
+                                keep_alive=_keep_alive_seconds(settings))
     raise ValueError(f"Unsupported embedding provider: {settings.embedding_provider!r}")
+
+
+def _keep_alive_seconds(settings: Settings) -> int:
+    """Sent with every Ollama call. Ollama's own default unloads a model after 5 idle minutes, and reloading
+    gemma3:4b on a laptop CPU added 15-29 s to the next answer."""
+    minutes = settings.ollama_keep_alive_minutes
+    return -1 if minutes == -1 else minutes * 60
 
 
 def get_vector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:

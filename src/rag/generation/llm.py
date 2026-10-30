@@ -8,6 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import Runnable
 
+from rag.generation.citations import has_no_words, only_says_not_stated, tidy_citations
 from rag.generation.prompts import ANSWER_PROMPT, NO_ANSWER, format_context
 
 
@@ -26,8 +27,10 @@ def answer(question: str, docs: list[Document], chat_model: BaseChatModel) -> An
     """Answer from the given passages only; with no passages, say so without calling the model."""
     if not docs:
         return Answer(text=NO_ANSWER, sources=[])
-    text = answer_chain(chat_model).invoke(_inputs(question, docs))
-    return Answer(text=text.strip(), sources=docs)
+    text = tidy_citations(answer_chain(chat_model).invoke(_inputs(question, docs)).strip())
+    if has_no_words(text) or only_says_not_stated(text):  # just "[1]", or "X is not stated in the passages [1]."
+        text = NO_ANSWER
+    return Answer(text=text, sources=docs)
 
 
 def stream_answer(question: str, docs: list[Document], chat_model: BaseChatModel) -> Iterator[str]:

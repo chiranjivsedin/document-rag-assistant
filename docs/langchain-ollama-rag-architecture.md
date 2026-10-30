@@ -206,7 +206,7 @@ The retrieved chunks are numbered and labelled (`format_context()`), for example
 
 `ANSWER_PROMPT` is a `ChatPromptTemplate` with two messages:
 
-- **System:** answer using only the numbered passages; cite them like `[1]` or `[2][3]`; if they don't contain the answer, reply exactly *"I don't know based on the available documents."*; no outside knowledge; be concise.
+- **System:** answer using only the numbered passages, in sentences that state the facts in words (a citation alone is never an answer); only state what the passages say; name the version each fact applies to; end each sentence with the citations of the passages that state it, each once, like `[2]`; if they don't contain the answer, reply exactly *"I don't know based on the available documents."*; be concise. `answer()` then collapses repeated citations (`[1][1]` → `[1]`) and turns a reply with no words (just `[1]`), or one that only says the passages don't state the answer ("The release date is not stated in the passages [1]."), into that "I don't know" reply.
 - **Human:** `Context passages: … Question: …`
 
 ### 6.3 Generate (`llm.py`)
@@ -290,7 +290,7 @@ POST /chat
 - `product` and `version` are optional filters (at most 100 characters); an empty value means "no filter".
 - `k` is the number of passages to retrieve, 1–20, default 5.
 - Unknown fields are rejected, so a misspelt filter such as `versoin` fails with 422 instead of being ignored.
-- `sources[n].number` matches the `[n]` citations in `answer`. `excerpt` is the first 300 characters of the passage.
+- `sources[n].number` matches the `[n]` citations in `answer`. `excerpt` is the whole passage the model was given, so the answer can be checked against it.
 - When the documents don't contain the answer, `answer` is "I don't know based on the available documents.", `no_answer` is `true` and `sources` is empty. If nothing matches the filters, this reply comes back without calling the model.
 
 The whole answer arrives at once (about 15–40 s on a laptop CPU); there is no streaming endpoint yet.
@@ -359,6 +359,7 @@ Settings come from `.env` (copy `.env.example`) or from environment variables; r
 | `EMBEDDING_PROVIDER` | `ollama` | Only `ollama` is supported |
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name in Ollama |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Where Ollama listens |
+| `OLLAMA_KEEP_ALIVE_MINUTES` | `30` | How long Ollama keeps a model loaded after a call (`-1` = until Ollama stops); Ollama's own default of 5 minutes makes the next answer 15–30 s slower |
 | `CHUNK_SIZE` | `1000` | Maximum characters per chunk |
 | `CHUNK_OVERLAP` | `150` | Characters repeated between neighbouring chunks (must be smaller than `CHUNK_SIZE`) |
 | `DOCUMENTS_DIR` | `documents` | Folder that `ingest.py` reads (can also be passed with `--documents-dir`) and the only folder `POST /documents/ingest` reads. Relative paths are resolved from the folder the script or server is started in |
