@@ -93,6 +93,12 @@ def test_ask_hides_sources_when_the_model_does_not_know():
     assert result.sources == []
 
 
+def test_ask_treats_a_citation_only_reply_as_no_answer():
+    result = ask(services_with(FakeStore(PASSAGES), "[1]"), "Which version added a mobile app?")
+    assert result.text == NO_ANSWER
+    assert result.sources == []
+
+
 def test_ask_with_nothing_retrieved_says_so_without_the_model():
     result = ask(services_with(FakeStore([]), "should not be used"), "Anything?")
     assert result.text == NO_ANSWER

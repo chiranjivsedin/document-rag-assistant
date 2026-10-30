@@ -37,7 +37,7 @@ class ChatSource(BaseModel):
     doc_type: str | None
     page: int | None
     distance: float = Field(description="Cosine distance to the question: 0 = same meaning, larger = less related")
-    excerpt: str = Field(description="Start of the passage, for previews")
+    excerpt: str = Field(description="The whole passage given to the model, so the answer can be checked against it")
 
 
 class ChatResponse(BaseModel):

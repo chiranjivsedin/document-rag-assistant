@@ -55,6 +55,17 @@ def test_invalid_chunking(size, overlap):
         get_settings({"CHUNK_SIZE": size, "CHUNK_OVERLAP": overlap})
 
 
+def test_keep_alive_defaults_to_30_minutes():
+    assert get_settings({}).ollama_keep_alive_minutes == 30
+    assert get_settings({"OLLAMA_KEEP_ALIVE_MINUTES": "-1"}).ollama_keep_alive_minutes == -1
+
+
+@pytest.mark.parametrize("value", ["-2", "soon"])
+def test_invalid_keep_alive(value):
+    with pytest.raises(ValueError, match="OLLAMA_KEEP_ALIVE_MINUTES"):
+        get_settings({"OLLAMA_KEEP_ALIVE_MINUTES": value})
+
+
 def test_unsupported_vector_store():
     with pytest.raises(ValueError, match="VECTOR_STORE 'chroma' is not supported"):
         get_settings({"VECTOR_STORE": "chroma"})

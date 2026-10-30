@@ -37,7 +37,6 @@ from rag.service import Services, ask, build_services, run_ingest
 
 logger = logging.getLogger(__name__)
 
-EXCERPT_CHARS = 300
 UNAVAILABLE = "Ollama or the database stopped responding. Check GET /health."
 INGEST_FAILED = "Ingestion failed unexpectedly; see the server log."
 
@@ -199,7 +198,7 @@ def _source(number: int, doc: Document) -> ChatSource:
         doc_type=meta.get("doc_type"),
         page=meta.get("page"),
         distance=meta["distance"],
-        excerpt=doc.page_content[:EXCERPT_CHARS],
+        excerpt=doc.page_content,  # the whole passage the model read (at most CHUNK_SIZE characters)
     )
 
 
