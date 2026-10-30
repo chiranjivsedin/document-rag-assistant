@@ -10,7 +10,7 @@ A **local prototype**, tested on a developer laptop with fictional sample docume
 
 - **Pending:** deployment to Azure, and validation against real **version 16.2** documents (none have been indexed or tested yet).
 - **Not built yet:** the mini document-management screens (upload and manage documents), the release-notes / deprecated-features view, user login, Azure model providers, keyword search, and a relevance cut-off. Scanned PDFs (no text layer) and Word files are not supported.
-- **Answers are slow on a laptop CPU:** a minute or more per answer with the default model.
+- **Answers are slow on a laptop CPU** with the default model: about 20–65 seconds when a question needs new passages, a few seconds when it reuses the previous question's passages, and 15–30 seconds more when the model first has to load.
 
 ## Features
 
@@ -21,7 +21,13 @@ A **local prototype**, tested on a developer laptop with fictional sample docume
   - `GET /health`: are Ollama, the models and the database reachable?
   - `POST /chat`: answer a question, with sources.
   - `POST /documents/ingest` and `GET /documents/ingest/{job_id}`: index the documents folder as a background job and follow it.
-- **Web app** (React): a Chat screen with clickable citations and a service-status banner, and an Ingestion screen that starts indexing and shows progress and results. The Documents and Release notes tabs are placeholders.
+- **Web app** (React):
+  - **Chat:** ask with optional product, version and passage-count filters. Each answer shows its `[n]` citations as buttons that open the cited passage in full, with a strip of source cards marking which ones were cited.
+  - **Sidebar:** New chat, this session's questions (click one to jump back to it), a live service-status card and a System / Light / Dark theme switch. On small screens it becomes a slide-out menu.
+  - **Ingestion:** starts indexing and shows progress and results.
+  - **Release notes:** choose a version and a topic (what's new, deprecated or removed features); the question opens in Chat limited to that version. A dedicated release-notes view is not built yet.
+  - **Documents:** explains how to add documents today; the document library is not built yet.
+- **Answer checks:** a reply that is only a citation (`[1]`) or only says the passages don't state the answer becomes the standard "I don't know" reply, and repeated citations are merged.
 
 Everything runs locally: the models are served by Ollama on your machine, so documents and questions are not sent to a cloud service.
 
@@ -77,10 +83,10 @@ cd frontend && npm run typecheck && npm test && npm run build
 ## Documentation
 
 - [Architecture and onboarding guide](docs/langchain-ollama-rag-architecture.md): components, data flow, configuration and the HTTP API.
-- [Running it on Windows](docs/run-locally-windows.md): every command explained.
+- [Running it on Windows](docs/run-locally-windows.md): every command explained, including starting the web app.
 - [Under the hood](docs/under-the-hood.md): ingestion and answering, file by file.
 
-These guides cover the scripts and the API; the web app is described in this README for now.
+The guides cover the backend in depth; the web app's screens are described above.
 
 ## Project layout
 
@@ -96,7 +102,7 @@ docs/           guides
 
 - `integration`: the complete working application (backend and web app). New work branches from it and is merged back after review.
 - `main`: lead-approved work only; currently the initial scaffold.
-- `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`: earlier phase branches, kept for reference.
+- `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`, `feature/ui-redesign`, `fix/rag-answer-quality`, `fix/sidebar-history-scroll`: earlier branches, all merged into `integration` and kept for reference.
 
 ## Hosting
 
