@@ -2,7 +2,7 @@
 
 A guide for developers new to this codebase: how a question becomes a cited answer, which file does what, and how to run it on your own machine.
 
-> **Scope.** This describes the `feature/rest-api` branch (built on `poc/langchain-ollama`). It is a **local prototype**: two command-line scripts and a small HTTP API (FastAPI) over the same functions, a PostgreSQL database in Docker, and models served by Ollama on your laptop. There is no UI, user login, document upload or cloud deployment yet (see [Missing or incomplete parts](#12-missing-or-incomplete-parts)). Everything below is taken from the code on this branch.
+> **Scope.** This describes the `integration` branch. It is a **local prototype**: two command-line scripts, a small HTTP API (FastAPI) over the same functions, a React web app that uses the API, a PostgreSQL database in Docker, and models served by Ollama on your laptop. There is no user login, document upload or cloud deployment yet (see [Missing or incomplete parts](#12-missing-or-incomplete-parts)). This guide covers the backend in depth; the web app's screens are described in the [README](../README.md). Everything below is taken from the code on this branch.
 
 ---
 
@@ -13,7 +13,7 @@ RAG (retrieval-augmented generation) answers questions **from your own documents
 1. **Indexing** (`scripts/ingest.py`): read every file in `documents/`, cut the text into small chunks, turn each chunk into an *embedding* (a list of 768 numbers that captures its meaning), and store chunk + embedding in PostgreSQL.
 2. **Answering** (`scripts/ask.py`): turn the question into an embedding, find the stored chunks with the closest meaning, give those chunks to a chat model with strict instructions ("answer only from these passages and cite them"), and print the answer with its sources.
 
-The HTTP API runs the same two phases for other programs (a future React UI or the mini DMS): `POST /documents/ingest` and `POST /chat` (see [section 7](#7-http-api)).
+The HTTP API runs the same two phases for other programs (the web app now, later the mini DMS): `POST /documents/ingest` and `POST /chat` (see [section 7](#7-http-api)).
 
 ---
 
@@ -53,7 +53,8 @@ flowchart TD
         A4 -->|yes| A5["Number the chunks [1] [2] …<br/>and build the prompt<br/>prompts.format_context() + ANSWER_PROMPT"]
         A5 --> A6["LCEL chain: prompt → chat model → StrOutputParser<br/>llm.stream_answer()"]
         A6 --> A7["Print the answer as it streams,<br/>with [n] citations"]
-        A7 --> A8["Print Sources list:<br/>file · version · page · distance"]
+        A7 --> A7b["A reply that is only a citation, or only says<br/>the passages don't state it, counts as I don't know<br/>citations.has_no_words() / only_says_not_stated()"]
+        A7b --> A8["Print Sources list:<br/>file · version · page · distance"]
     end
 
     DB -->|closest chunks + distances| A3
@@ -79,6 +80,7 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | **Retrieval** | Finds the closest chunks to a question, with optional product/version filter, and attaches each chunk's distance | `src/rag/retrieval/search.py` |
 | **Prompt** | The instructions to the model and the numbered, labelled context | `src/rag/generation/prompts.py` |
 | **Answer generation** | LCEL chain that sends the prompt to the chat model and returns plain text, whole or streamed | `src/rag/generation/llm.py` |
+| **Answer checks** | Merges repeated citations (`[1][1]` → `[1]`) and recognises replies that aren't answers: only citations, or only "not stated in the passages" | `src/rag/generation/citations.py` |
 | **Shared service layer** | The glue every entry point uses: build the store and chat model once (`build_services()`), run an ingest against what is already stored (`run_ingest()`), answer a question (`ask()`), and decide which sources to show (`sources_to_show()`) | `src/rag/service.py` |
 | **Indexing entry point** | Command-line script for phase 1 | `scripts/ingest.py` |
 | **Answering entry point** | Command-line script for phase 2 | `scripts/ask.py` |
@@ -86,6 +88,7 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | **API schemas** | Request and response bodies (Pydantic), also published at `/docs` | `src/rag/api/schemas.py` |
 | **Ingestion jobs** | In-memory registry of background ingestion jobs: one at a time, guarded by a lock | `src/rag/api/jobs.py` |
 | **Local database** | PostgreSQL 18 with the pgvector extension, in Docker | `docker-compose.yml` |
+| **Web app** | React screens (Chat, Release notes, Documents, Ingestion) that call the HTTP API; in development Vite forwards `/health`, `/chat` and `/documents` to the API | `frontend/` |
 
 ---
 
@@ -109,6 +112,7 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | Model server | **Ollama** (tested with 0.24) on `http://127.0.0.1:11434` | Runs on the CPU on a typical laptop |
 | HTTP API | **FastAPI** (validation with **Pydantic**), served by **uvicorn** | Plain `def` endpoints, run in a thread pool |
 | Tests | `pytest`, FastAPI `TestClient` (needs `httpx`) | Unit tests use fakes; integration tests use real Docker + Ollama |
+| Web app | **React 19** + **TypeScript**, built with **Vite**; tested with **Vitest** and Testing Library (jsdom) | Plain CSS, Inter font bundled locally; needs Node.js 22.12+ |
 
 Tested with Python 3.14; `pyproject.toml` declares Python 3.10 or newer.
 
@@ -190,7 +194,7 @@ The column list is defined once, in `METADATA_COLUMNS` in `providers.py`. Changi
 
 1. The question is embedded with the same `nomic-embed-text` model (inside `PGVectorStore`).
 2. PostgreSQL returns the `k` chunks with the smallest **cosine distance** to the question, optionally only those whose `version` and/or `product` match (both filters combined with AND).
-3. Each returned chunk gets `metadata["distance"]`: 0 means the same meaning; larger means less related. On the sample data, relevant chunks scored about 0.26–0.49 and unrelated ones about 0.55–0.60. No cut-off is applied yet; all `k` chunks are passed on.
+3. Each returned chunk gets `metadata["distance"]`: 0 means the same meaning; larger means less related. On the sample data, chunks that answer the question scored about 0.27–0.45 and chunks for an unrelated question about 0.55–0.60, but chunks for an on-topic question the documents can't answer (single sign-on) scored 0.44–0.50, so a fixed cut-off would be hard to choose. No cut-off is applied yet; all `k` chunks are passed on.
 
 ### 6.2 Build the prompt (`prompts.py`)
 
@@ -233,13 +237,13 @@ Sources:
   [2] acme-dms/1.0/release-notes/release-notes.md, version 1.0  (distance 0.506)
 ```
 
-The list is hidden when the answer is the "I don't know" reply; that rule lives in `service.sources_to_show()`, so `POST /chat` applies it too. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
+Before that, `ask.py` applies the same checks as `answer()`: a streamed reply that is only a citation, or only says the passages don't state the answer, is replaced by the "I don't know" reply. (Repeated citations are not merged here, because the text is already printed as it streams.) The list is hidden when the answer is the "I don't know" reply; that rule lives in `service.sources_to_show()`, so `POST /chat` applies it too. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
 
 ---
 
 ## 7. HTTP API
 
-`src/rag/api/app.py` exposes both phases over HTTP with **FastAPI**, for a future React UI or the mini DMS. It adds no RAG logic of its own: every endpoint calls `rag.health.check_services()` and the functions in `rag/service.py`, exactly like the scripts.
+`src/rag/api/app.py` exposes both phases over HTTP with **FastAPI**, for the web app and later the mini DMS. It adds no RAG logic of its own: every endpoint calls `rag.health.check_services()` and the functions in `rag/service.py`, exactly like the scripts.
 
 Start it from the repository root (with Docker and Ollama running, for real answers):
 
@@ -293,7 +297,7 @@ POST /chat
 - `sources[n].number` matches the `[n]` citations in `answer`. `excerpt` is the whole passage the model was given, so the answer can be checked against it.
 - When the documents don't contain the answer, `answer` is "I don't know based on the available documents.", `no_answer` is `true` and `sources` is empty. If nothing matches the filters, this reply comes back without calling the model.
 
-The whole answer arrives at once (about 15–40 s on a laptop CPU); there is no streaming endpoint yet.
+The whole answer arrives at once (for times on a laptop CPU, see [section 10](#10-running-it-locally-windows)); there is no streaming endpoint yet.
 
 ### 7.3 Ingestion jobs
 
@@ -394,11 +398,11 @@ External services: **Docker Desktop** (for the database) and **Ollama** with the
 
 ## 10. Running it locally (Windows)
 
-**Prerequisites:** Python 3.10+ (tested on 3.14), Docker Desktop running, Ollama installed and running, Git.
+**Prerequisites:** Python 3.10+ (tested on 3.14), Docker Desktop running, Ollama installed and running, Git, and Node.js 22.12+ for the web app.
 
 For a step-by-step walkthrough in PowerShell that explains every command, see [run-locally-windows.md](run-locally-windows.md).
 
-From the repository root, on branch `feature/rest-api`:
+From the repository root, on branch `integration`:
 
 ```bash
 # 1. Python environment and dependencies
@@ -423,11 +427,18 @@ ollama pull nomic-embed-text
 
 # 7. Or run the HTTP API instead of steps 5–6 (docs at http://127.0.0.1:8000/docs, Ctrl+C to stop)
 .venv/Scripts/python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
+
+# 8. And the web app on top of it, in a second terminal (open http://localhost:5173)
+cd frontend && npm install && npm run dev
 ```
 
 Re-run step 5 (or `POST /documents/ingest`) whenever files in `documents/` are added, changed or removed. Stop the database with `docker compose down` (data is kept); `docker compose down -v` deletes it.
 
-**Expect slow answers on a laptop CPU:** about 15–40 seconds with `gemma3:4b`, and about a minute for the first question after Ollama starts (the model loads into memory).
+**Expect slow answers on a laptop CPU** with `gemma3:4b` (measured on a 4-core laptop):
+
+- about **20–65 s** when the question needs new passages: most of that is the model reading the prompt;
+- a **few seconds** when it reuses the passages of the previous question, because Ollama keeps the already-read prompt;
+- **15–30 s more** when the model has to load: the first question after Ollama starts, or after `OLLAMA_KEEP_ALIVE_MINUTES` (default 30) without questions. Keeping both models loaded uses about 5 GB of RAM.
 
 ### Tests
 
@@ -435,6 +446,7 @@ Re-run step 5 (or `POST /documents/ingest`) whenever files in `documents/` are a
 .venv/Scripts/python.exe -m pytest                     # unit tests: no services needed
 .venv/Scripts/python.exe -m pytest -m integration      # live tests: need Docker database + Ollama
 .venv/Scripts/python.exe -m pytest tests/unit/test_loaders.py::test_markdown_gives_one_document   # one test
+cd frontend && npm run typecheck && npm test && npm run build                                       # web app
 ```
 
 Unit tests use stand-ins (a fake vector store, LangChain's `FakeListChatModel`, fake Ollama/database responses); the API tests call the app through FastAPI's `TestClient`. Integration tests are marked `integration` and are skipped by the default `pytest` run. They create and drop their own temporary tables, so your `chunks` table is not touched; the API integration test (`tests/integration/test_api_live.py`) also uses its own temporary documents folder and checks `/health`, ingestion through the API, and `/chat` answering from the document it indexed. Add `-p no:warnings` to hide a harmless deprecation warning from the `langsmith` package on Python 3.14.
@@ -478,13 +490,17 @@ RAG/
 │   │   └── search.py        # retrieve() with filters + distance
 │   └── generation/
 │       ├── prompts.py       # ANSWER_PROMPT, format_context, source_label
-│       └── llm.py           # LCEL chain, answer(), stream_answer()
+│       ├── llm.py           # LCEL chain, answer(), stream_answer()
+│       └── citations.py     # merge repeated citations; spot replies that aren't answers
+├── frontend/                # React + TypeScript web app (Vite); src/features/ holds one folder per screen
 ├── tests/unit/              # fast tests with fakes
 ├── tests/integration/       # live tests (Docker + Ollama)
+├── docs/                    # these guides
 ├── documents/               # your files (git-ignored)
 ├── docker-compose.yml       # local PostgreSQL + pgvector
 ├── pyproject.toml           # dependencies, pytest settings
 ├── .env.example             # settings template
+├── README.md                # overview and quick start
 └── CLAUDE.md                # notes for AI coding assistants
 ```
 
@@ -501,13 +517,14 @@ RAG/
 - **File types:** only PDF, Markdown and text. No Word, Excel, PowerPoint or HTML; no OCR for scanned PDFs.
 - **Search:** vector search only. No keyword/full-text search, no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents).
 - **Smarter chunking:** no splitting by Markdown headings; tables in PDFs come out as plain text in reading order.
-- **Product features:** no mini document-management system (DMS), user interface, user accounts or permissions.
+- **Product features:** no mini document-management system (DMS), dedicated release-notes view, user accounts or permissions. The web app's Documents and Release notes screens point to these but don't provide them yet.
 - **Deployment:** runs only on a developer machine; no server deployment, no production server settings for uvicorn.
 
 **Known limitations and inconsistencies:**
 
-- The **Sources** list shows all retrieved chunks, not only the ones the answer cites.
-- The "I don't know" check (`service.sources_to_show()`, also behind `no_answer` in `/chat`) is a text match on the model's reply; if the model rephrases it, sources are still shown.
+- The **Sources** list shows all retrieved chunks, not only the ones the answer cites. (The web app marks each source as cited or not.)
+- The "I don't know" check (`service.sources_to_show()`, also behind `no_answer` in `/chat`) is a text match on the model's reply. `citations.py` also catches replies that are only a citation or only say the passages don't state the answer, in English wording such as "is not stated / mentioned in the passages". A reply worded differently still counts as an answer, with its sources shown.
+- The small model occasionally cites a passage that mentions the subject instead of the one that states the fact; the full passage text in each source lets readers check.
 - No structured (JSON) output parsing: answers are plain text with `[n]` citations.
 - The small `gemma3:4b` model can miss details spread over several passages.
 - Each script run spends roughly 1–9 s setting up the Ollama connection (the Ollama client library loads HTTPS certificates even for the local plain-HTTP address). The API pays this once, when it builds its services.

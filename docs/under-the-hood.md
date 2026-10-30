@@ -1,6 +1,6 @@
 # Under the hood: ingestion and answering
 
-What happens inside the two workflows of the local prototype (branch `feature/rest-api`), file by file. Both run as one call chain: an entry point (a script in `scripts/`, or an HTTP endpoint in `src/rag/api/`) calls small functions in `src/rag/`. Five shared files sit underneath, and each workflow adds its own folder on top. The last section shows how the HTTP API reaches the same functions.
+What happens inside the two workflows of the local prototype (branch `integration`), file by file. Both run as one call chain: an entry point (a script in `scripts/`, or an HTTP endpoint in `src/rag/api/`) calls small functions in `src/rag/`. Five shared files sit underneath, and each workflow adds its own folder on top. The last section shows how the HTTP API reaches the same functions; the web app in `frontend/` only calls that API, so it adds no steps of its own.
 
 To run it, see [run-locally-windows.md](run-locally-windows.md). For the overall architecture, see [langchain-ollama-rag-architecture.md](langchain-ollama-rag-architecture.md).
 
@@ -8,9 +8,9 @@ To run it, see [run-locally-windows.md](run-locally-windows.md). For the overall
 
 | File | What it does |
 |---|---|
-| `src/rag/config.py` | `get_settings()` reads `.env` into a frozen `Settings` object (model names, Ollama URL, chunk size, database URL, table name). It fills in defaults and rejects bad values early, such as an overlap bigger than the chunk size or an unsupported provider. Nothing else reads environment variables. |
+| `src/rag/config.py` | `get_settings()` reads `.env` into a frozen `Settings` object (model names, Ollama URL and keep-alive time, chunk size, database URL, table name). It fills in defaults and rejects bad values early, such as an overlap bigger than the chunk size or an unsupported provider. Nothing else reads environment variables. |
 | `src/rag/health.py` | `check_services()` runs before any real work. It asks Ollama's `/api/tags` whether it is up and has the models, and opens a test database connection. It returns plain-English problems; the scripts print them and exit, and the API returns them with status 503. |
-| `src/rag/providers.py` | The only file that knows the backends are Ollama and pgvector. It returns a chat model (`ChatOllama`, temperature 0), embeddings (`OllamaEmbeddings`) and the vector store (`PGVectorStore`). On first use it creates the `chunks` table, sizing the vector column by embedding a test string and counting the numbers (768). `METADATA_COLUMNS` defines which metadata become real SQL columns: source, file_hash, product, version, doc_type, page, embedding_model. `unavailable_errors()` and `model_errors()` list the backend exceptions that mean "couldn't reach Ollama or the database" and "the model returned an error"; the API uses them to choose 503 or 502. |
+| `src/rag/providers.py` | The only file that knows the backends are Ollama and pgvector. It returns a chat model (`ChatOllama`, temperature 0), embeddings (`OllamaEmbeddings`) and the vector store (`PGVectorStore`). Both models send a keep-alive time with every call (`OLLAMA_KEEP_ALIVE_MINUTES`, default 30), so Ollama keeps them loaded between questions instead of unloading them after its default 5 idle minutes; reloading the chat model costs 15–30 s. On first use it creates the `chunks` table, sizing the vector column by embedding a test string and counting the numbers (768). `METADATA_COLUMNS` defines which metadata become real SQL columns: source, file_hash, product, version, doc_type, page, embedding_model. `unavailable_errors()` and `model_errors()` list the backend exceptions that mean "couldn't reach Ollama or the database" and "the model returned an error"; the API uses them to choose 503 or 502. |
 | `src/rag/service.py` | The glue every entry point shares, so scripts and API don't each repeat it. `build_services()` creates the vector store and chat model once (a `Services` object). `run_ingest()` looks up what is already stored and runs `ingest()`. `ask()` retrieves, answers and returns the sources to show. `sources_to_show()` holds the rule "no sources when the answer is 'I don't know'". |
 | `src/rag/database.py` | Plain SQL helpers that sit beside LangChain: open a connection (10 s timeout), convert the URL to the `postgresql+asyncpg://` form the vector store needs, check whether a table exists, and `indexed_files()`, which lists what is already stored. |
 
@@ -85,6 +85,7 @@ ask.py "question" --version 1.0
  ├─ stream_answer()                         generation/llm.py
  │    ├─ format_context()                   generation/prompts.py → numbered passages
  │    └─ ANSWER_PROMPT | chat model | StrOutputParser   (LCEL chain)
+ ├─ has_no_words() / only_says_not_stated() generation/citations.py → "I don't know" if not a real answer
  ├─ sources_to_show()                       service.py   → none if "I don't know"
  └─ print sources with source_label()       generation/prompts.py
 ```
@@ -103,7 +104,12 @@ It parses the question and `--version`, `--product` and `--k`, then runs the hea
 ### `generation/prompts.py`: what the model is told
 
 - `ANSWER_PROMPT` is a `ChatPromptTemplate` with two messages:
-  - **System:** answer only from the numbered passages, cite them like `[1]`, use no outside knowledge, and if the answer isn't there reply exactly `I don't know based on the available documents.` (the `NO_ANSWER` constant).
+  - **System:** answer only from the numbered passages, as a short list of rules. Each rule answers a failure seen with `gemma3:4b`:
+    - answer in sentences that state the facts in words; a citation alone is never an answer (it once replied just `[1]`);
+    - only state what the passages say, with no guessing or outside knowledge;
+    - when passages cover different versions, say which version each fact applies to;
+    - end each sentence with its citation, following an example sentence, and cite only the passages that state that fact, each once (it used to stack `[1][2]` when `[2]` said nothing about the fact);
+    - if the answer isn't there, reply exactly `I don't know based on the available documents.` (the `NO_ANSWER` constant), with no citation.
   - **Human:** the passages followed by the question.
 - `format_context()` turns the chunks into `[1] (acme-dms/1.0/release-notes/release-notes.md, version 1.0)` followed by the text, then `[2] …`, and so on. The numbering is what lets the citations match the source list.
 - `source_label()` builds that label: path, version, and page if there is one.
@@ -111,12 +117,22 @@ It parses the question and `--version`, `--product` and `--k`, then runs the hea
 ### `generation/llm.py`: runs the model
 
 - `answer_chain()` is the LCEL pipeline `ANSWER_PROMPT | chat_model | StrOutputParser()`. It fills the template, sends it to `gemma3:4b`, and turns the reply message into a plain string.
-- `stream_answer()`, which the CLI uses, yields text as it is generated. `answer()`, which `service.ask()` and so the API use, returns the whole text at once in an `Answer` object.
+- `stream_answer()`, which the CLI uses, yields text as it is generated. `answer()`, which `service.ask()` and so the API use, returns the whole text at once in an `Answer` object, after passing it through the checks in `citations.py` (below).
 - If retrieval found nothing, both return `NO_ANSWER` without calling the model.
+
+### `generation/citations.py`: checks on the reply
+
+Small, model-independent checks, so a quirk of the model doesn't reach the user:
+
+- `tidy_citations()` merges a number repeated in one place: `[1][1]`, `[1] [1]` and `[1, 1]` become `[1]`. It never changes the words, and it leaves ranges such as `[1-3]` as written.
+- `has_no_words()` is true for a reply that is empty or only citations and punctuation, such as `[1]`.
+- `only_says_not_stated()` is true when every sentence only says the documents lack the answer, e.g. "The release date of 2.0 is not stated in the passages [1]." It needs both a phrase such as "is not stated / mentioned / specified" or "no information" and a mention of the passages or documents, so a product fact like "is not supported in 2.0" still counts as an answer. English wording only.
+
+`answer()` applies `tidy_citations()`, then replaces the reply with `NO_ANSWER` if either of the other two checks is true. That keeps `no_answer` in `/chat`, and the hidden source list, working when the model words "I don't know" its own way.
 
 ### Back in `ask.py`
 
-`sources_to_show()` hides the source list when the answer contains `NO_ANSWER`. Otherwise it prints **all** retrieved passages, not just the ones the model cited.
+Because the answer was printed as it streamed, `ask.py` can't tidy citations, but it applies the other two checks: if the reply isn't a real answer, it prints `NO_ANSWER` and treats the answer as that. `sources_to_show()` then hides the source list when the answer contains `NO_ANSWER`. Otherwise it prints **all** retrieved passages, not just the ones the model cited.
 
 ## The same workflows over HTTP (`src/rag/api/`)
 
@@ -133,7 +149,7 @@ POST /chat  {"question", "product"?, "version"?, "k"?}
  ├─ ChatRequest validation                      api/schemas.py   → 422 if invalid
  ├─ check_services(need_chat_model=True)        health.py        → 503 if a problem
  ├─ get_services()                              api/app.py   → build_services() on first use, then reused
- ├─ ask()                                       service.py   → retrieve() + answer() + sources_to_show()
+ ├─ ask()                                       service.py   → retrieve() + answer() (with citations.py checks) + sources_to_show()
  └─ ChatResponse: answer, no_answer, numbered sources with excerpt
 
 POST /documents/ingest  (no body)
@@ -169,5 +185,5 @@ Pydantic models that validate input and describe output; FastAPI also publishes 
 
 - **Same embedding model on both sides.** Questions and chunks must be embedded by the same model, or the distances are meaningless. That's why `embedding_model` is stored on every row, and why changing it makes ingest redo every file.
 - **LangChain stays inside `src/rag/`.** The scripts and the API only call our own functions (`build_services()`, `run_ingest()`, `ask()`, `retrieve()`, `stream_answer()`), and the tests swap in fake stores and models.
-- **No relevance cut-off.** You always get the top `k` chunks, even if they are weakly related. The prompt is the only guard against made-up answers.
+- **No relevance cut-off.** You always get the top `k` chunks, even if they are weakly related. The prompt is the only guard against made-up answers; the checks in `citations.py` only catch replies that aren't answers, not wrong ones.
 - **Two database clients.** `PGVectorStore` uses asyncpg; `database.py` uses psycopg for the small direct queries the vector store doesn't offer, such as "which files are stored, with which hash".
