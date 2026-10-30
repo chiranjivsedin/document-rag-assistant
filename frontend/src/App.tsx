@@ -148,8 +148,8 @@ export function App() {
           <div className="recent">
             <h2 className="sidebar-heading">This session</h2>
             <ul>
-              {history
-                .slice(-8)
+              {/* Every question, newest first; a long list scrolls (see .recent ul in styles.css). */}
+              {[...history]
                 .reverse()
                 .map((item) => (
                   <li key={item.id}>
