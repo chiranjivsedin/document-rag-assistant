@@ -17,6 +17,10 @@ export function describeError(error: unknown): ErrorText {
     switch (error.status) {
       case 422:
         return { title: "Please check the request", detail: error.detail };
+      case 409:
+        return { title: "Not possible", detail: error.detail }; // e.g. the path is taken, or indexing is running
+      case 413:
+        return { title: "File too large", detail: error.detail };
       case 503:
         return { title: "A required service is unavailable", detail: error.detail };
       case 502:

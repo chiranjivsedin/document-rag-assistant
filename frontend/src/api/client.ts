@@ -1,6 +1,14 @@
 // Small fetch wrapper for the RAG API. URLs are relative: Vite's dev proxy (vite.config.ts) forwards them to uvicorn.
 
-import type { ChatRequest, ChatResponse, HealthResponse, IngestJob } from "./types";
+import type {
+  ChatRequest,
+  ChatResponse,
+  DocumentRecord,
+  HealthResponse,
+  IngestJob,
+  UploadedDocument,
+  UploadFields,
+} from "./types";
 
 /** The API answered with an error status; `detail` is its message (or a summary of FastAPI's 422 field errors). */
 export class ApiError extends Error {
@@ -94,6 +102,44 @@ export async function getIngestJob(jobId: string, signal?: AbortSignal): Promise
   const body = await readJson(response);
   if (response.ok) return body as IngestJob;
   throw failure(response, body);
+}
+
+/** GET /documents: every document in the library, most recently added first. */
+export async function listDocuments(signal?: AbortSignal): Promise<DocumentRecord[]> {
+  const response = await send("/documents", { signal });
+  const body = await readJson(response);
+  const documents = (body as { documents?: unknown } | undefined)?.documents;
+  if (response.ok && Array.isArray(documents)) return documents as DocumentRecord[];
+  if (response.ok) throw new ApiError(response.status, "The document list came back in an unexpected form.");
+  throw failure(response, body);
+}
+
+/**
+ * POST /documents (multipart). The server stores the file and starts indexing it when it can; `ingest_job_id` says
+ * whether it did. The browser sets the multipart Content-Type (with its boundary) itself.
+ */
+export async function uploadDocument(file: File, fields: UploadFields, signal?: AbortSignal): Promise<UploadedDocument> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("product", fields.product);
+  form.append("version", fields.version);
+  form.append("doc_type", fields.docType);
+  const response = await send("/documents", { method: "POST", body: form, signal });
+  const body = await readJson(response);
+  if (response.ok) return body as UploadedDocument;
+  throw failure(response, body);
+}
+
+/** DELETE /documents/{id}: 204 when the file, its passages and its record are all gone. */
+export async function deleteDocument(id: string, signal?: AbortSignal): Promise<void> {
+  const response = await send(`/documents/${encodeURIComponent(id)}`, { method: "DELETE", signal });
+  if (response.status === 204) return;
+  throw failure(response, await readJson(response));
+}
+
+/** Where the original file is served: shown in the browser, or saved with `download`. A plain link, no fetch. */
+export function documentFileUrl(id: string, download = false): string {
+  return `/documents/${encodeURIComponent(id)}/file${download ? "?download=true" : ""}`;
 }
 
 function failure(response: Response, body: unknown): Error {

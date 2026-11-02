@@ -51,3 +51,35 @@ export interface ChatResponse {
   model: string;
   elapsed_ms: number;
 }
+
+// The document library (src/rag/api/documents.py, src/rag/dms/).
+
+export type DocumentStatus = "pending" | "processing" | "indexed" | "failed";
+
+export interface DocumentRecord {
+  id: string;
+  source: string; // path in the documents folder, as in a chat source
+  filename: string; // the name to show: the uploaded file's own name
+  product: string | null; // null only for files found higher up the folder tree
+  version: string | null;
+  doc_type: string | null;
+  content_type: string;
+  size_bytes: number;
+  file_hash: string;
+  origin: "upload" | "folder"; // folder: found in the documents folder, not uploaded here
+  status: DocumentStatus;
+  error: string | null; // set when status is "failed"
+  chunk_count: number | null; // passages in the index, once indexed
+  added_at: string; // ISO 8601, UTC
+  indexed_at: string | null;
+}
+
+export interface UploadedDocument extends DocumentRecord {
+  ingest_job_id: string | null; // the indexing job this upload started; null when it couldn't start one
+}
+
+export interface UploadFields {
+  product: string;
+  version: string;
+  docType: string;
+}

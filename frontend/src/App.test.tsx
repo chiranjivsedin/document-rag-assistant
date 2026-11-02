@@ -64,8 +64,19 @@ describe("App shell", () => {
 
   it("marks unbuilt sections as placeholders", async () => {
     render(<App />);
+    await userEvent.click(screen.getByRole("tab", { name: "Release notes" }));
+    expect((await screen.findByText(/not built yet/)).textContent).toContain("6F");
+  });
+
+  it("loads the document library when its tab is opened, not before", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url === "/health" ? OK : { documents: [] })));
+    const fetch = vi.mocked(globalThis.fetch);
+    render(<App />);
+    expect(fetch.mock.calls.some(([url]) => url === "/documents")).toBe(false);
+
     await userEvent.click(screen.getByRole("tab", { name: "Documents" }));
-    expect((await screen.findByText(/Not built yet/)).textContent).toContain("6E");
+    expect(await screen.findByText(/No documents yet/)).toBeTruthy();
+    expect(fetch.mock.calls.filter(([url]) => url === "/documents")).toHaveLength(1);
   });
 
   it("shows a notice listing each problem when services are down", async () => {

@@ -101,7 +101,7 @@ export function App() {
   // and their results survive tab switches.
   const panels: Record<TabId, ReactNode> = {
     chat: <ChatPage key={chatSession} prefill={prefill} onHistoryChange={setHistory} />,
-    documents: <DocumentsPage />,
+    documents: <DocumentsPage active={current === "documents"} />,
     versions: <ReleaseNotesPage onAsk={askInChat} />,
     ingestion: <IngestPage />,
   };

@@ -1727,6 +1727,334 @@ textarea {
   }
 }
 
+/* ---------- Document library ---------- */
+
+.banner-ok {
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 25%, transparent);
+}
+.banner-ok > .icon {
+  color: var(--ok);
+}
+
+.library-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(78px, auto));
+  margin: 0;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.library-counts div {
+  padding: 10px 14px;
+  border-left: 1px solid var(--border);
+  margin-left: -1px;
+}
+.library-counts dt {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.library-counts dd {
+  margin: 2px 0 0;
+  font-size: 20px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Upload */
+.upload-head {
+  display: grid;
+  gap: 4px;
+}
+.upload-head .hint {
+  margin: 0;
+}
+.upload-form {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.1fr) minmax(0, 3fr) auto;
+  gap: 12px 16px;
+  align-items: start;
+}
+.upload-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.form-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.form-field input,
+.search-field,
+.select-field {
+  height: 38px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.form-field input:focus,
+.search-field:focus,
+.select-field:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.form-field input[aria-invalid="true"],
+.file-picker:has(input[aria-invalid="true"]) {
+  border-color: var(--bad);
+}
+.field-problem {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--bad);
+}
+.upload-file {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding-top: 20px; /* lines the picker up with the labelled inputs beside it */
+}
+.file-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
+}
+.file-picker:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.file-picker:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+/* The real file input covers the picker, invisibly: clicking, keyboard focus and dropping a file all work. */
+.file-picker input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.file-picker-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-picker-size {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.upload-actions {
+  padding-top: 20px;
+}
+
+/* Toolbar */
+.library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.library-filters {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.search-field {
+  width: min(330px, 100%);
+}
+.select-field {
+  padding-right: 8px;
+}
+.library-shown {
+  margin: 0;
+}
+
+/* Table. If it is ever wider than the card, only the table scrolls, never the page. */
+.doc-table-wrap {
+  overflow-x: auto;
+}
+.doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.doc-table th {
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.doc-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.doc-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.doc-table tbody tr:hover {
+  background: var(--surface-2);
+}
+.doc-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.doc-name .icon {
+  flex: none;
+  color: var(--text-3);
+}
+.doc-name strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.doc-name-cell {
+  width: 36%;
+  min-width: 220px;
+}
+.doc-source {
+  display: block;
+  margin-top: 3px;
+  padding: 0;
+  background: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.doc-no-folders {
+  color: var(--text-3);
+}
+.doc-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.doc-error {
+  display: block;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--bad);
+}
+.doc-table .tag-list {
+  margin: 0;
+}
+.doc-number {
+  white-space: nowrap;
+}
+.doc-number,
+.doc-table time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status-pending {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-2);
+}
+.status-processing {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.status-indexed {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.status-failed {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+.status-extra {
+  font-weight: 500;
+}
+.status-badge .dots span {
+  width: 4px;
+  height: 4px;
+}
+.doc-actions-cell {
+  width: 1%;
+  text-align: right;
+}
+.doc-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.doc-actions a.button {
+  text-decoration: none;
+}
+.button-danger-text:hover:not(:disabled) {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+.button-danger {
+  border-color: color-mix(in srgb, var(--bad) 35%, transparent);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+.button-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bad) 18%, var(--surface));
+}
+.confirm-delete {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  max-width: 270px;
+  margin-left: auto;
+  text-align: right;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.confirm-buttons {
+  display: flex;
+  gap: 6px;
+}
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 1000px) {
@@ -1833,5 +2161,95 @@ textarea {
     flex-direction: column;
     align-items: flex-start;
     padding: 22px;
+  }
+}
+
+/* The document library on smaller screens. */
+@media (max-width: 900px) {
+  .library-counts {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .search-field {
+    width: 100%;
+  }
+}
+
+@media (max-width: 700px) {
+  .upload-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Below this width the form and the table don't fit beside the sidebar: the form stacks, and each table row
+   becomes a card. */
+@media (max-width: 1150px) {
+  .upload-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .upload-file,
+  .upload-actions {
+    padding-top: 0;
+  }
+
+  .library-filters {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .doc-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .doc-table,
+  .doc-table tbody,
+  .doc-table tr,
+  .doc-table td {
+    display: block;
+  }
+
+  .doc-table tr {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .doc-table tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  .doc-table td {
+    padding: 4px 0;
+    border: none;
+  }
+
+  .doc-table td[data-label]:not(.doc-name-cell)::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+
+  .doc-name-cell,
+  .doc-actions-cell {
+    width: auto;
+    min-width: 0;
+    text-align: left;
+  }
+
+  .doc-actions {
+    justify-content: flex-start;
+  }
+
+  .confirm-delete {
+    justify-items: start;
+    margin-left: 0;
+    text-align: left;
   }
 }

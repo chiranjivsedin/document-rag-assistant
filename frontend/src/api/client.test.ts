@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiError, ApiUnreachableError, errorDetail, getHealth, getIngestJob, postChat, startIngest } from "./client";
+import {
+  ApiError,
+  ApiUnreachableError,
+  deleteDocument,
+  documentFileUrl,
+  errorDetail,
+  getHealth,
+  getIngestJob,
+  listDocuments,
+  postChat,
+  startIngest,
+  uploadDocument,
+} from "./client";
 
 const OK = { status: "ok", llm_model: "gemma3:4b", embedding_model: "nomic-embed-text", problems: [] };
 const DOWN = {
@@ -149,5 +161,54 @@ describe("errorDetail", () => {
 
   it("falls back to the status when there is no detail", () => {
     expect(errorDetail(undefined, 502)).toBe("Request failed with status 502");
+  });
+});
+
+describe("document library", () => {
+  const DOC = { id: "id 1", filename: "a.md", status: "pending" };
+
+  it("listDocuments returns the documents array", async () => {
+    const fetch = respond(200, { documents: [DOC] });
+    expect(await listDocuments()).toEqual([DOC]);
+    expect(fetch).toHaveBeenCalledWith("/documents", expect.anything());
+  });
+
+  it("listDocuments refuses a body without a documents list", async () => {
+    respond(200, { answer: "not a list" });
+    await expect(listDocuments()).rejects.toMatchObject({ detail: "The document list came back in an unexpected form." });
+  });
+
+  it("uploadDocument posts multipart form data and lets the browser set its Content-Type", async () => {
+    const fetch = respond(201, { ...DOC, ingest_job_id: "job-1" });
+    const file = new File(["# hi"], "a.md");
+    expect(await uploadDocument(file, { product: "acme", version: "1.0", docType: "notes" })).toMatchObject({ ingest_job_id: "job-1" });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, init.headers]).toEqual(["/documents", "POST", undefined]);
+    const form = init.body as FormData;
+    expect([form.get("file"), form.get("product"), form.get("version"), form.get("doc_type")]).toEqual([file, "acme", "1.0", "notes"]);
+  });
+
+  it("uploadDocument turns a refusal into ApiError with the server's reason", async () => {
+    respond(413, { detail: "The file is larger than the 50 MB limit." });
+    await expect(uploadDocument(new File(["x"], "a.md"), { product: "a", version: "1", docType: "n" })).rejects.toMatchObject({
+      status: 413,
+      detail: "The file is larger than the 50 MB limit.",
+    });
+  });
+
+  it("deleteDocument succeeds on 204 and escapes the id", async () => {
+    const fetch = respond(204);
+    await deleteDocument("id 1");
+    expect(fetch).toHaveBeenCalledWith("/documents/id%201", expect.objectContaining({ method: "DELETE" }));
+  });
+
+  it("deleteDocument reports a part-way failure with the server's explanation", async () => {
+    respond(503, { detail: "The original file was deleted, but …", file_deleted: true, chunks_deleted: false, record_deleted: false });
+    await expect(deleteDocument("x")).rejects.toMatchObject({ status: 503, detail: "The original file was deleted, but …" });
+  });
+
+  it("documentFileUrl builds the open and download links", () => {
+    expect(documentFileUrl("id 1")).toBe("/documents/id%201/file");
+    expect(documentFileUrl("id 1", true)).toBe("/documents/id%201/file?download=true");
   });
 });

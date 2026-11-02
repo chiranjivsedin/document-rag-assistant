@@ -9,6 +9,8 @@ describe("describeError", () => {
     [503, "Can't reach Ollama at http://127.0.0.1:11434.", "A required service is unavailable"],
     [502, "The model service failed: out of memory", "The model couldn't answer"],
     [404, "Not Found", "The API answered with status 404"],
+    [409, "A document already exists at a/b/c.md.", "Not possible"],
+    [413, "The file is larger than the 50 MB limit.", "File too large"],
   ])("status %i keeps the server's detail", (status, detail, title) => {
     expect(describeError(new ApiError(status, detail))).toEqual({ title, detail });
   });
