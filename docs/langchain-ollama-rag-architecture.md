@@ -2,7 +2,7 @@
 
 A guide for developers new to this codebase: how a question becomes a cited answer, which file does what, and how to run it on your own machine.
 
-> **Scope.** This describes the `integration` branch. It is a **local prototype**: two command-line scripts, a small HTTP API (FastAPI) over the same functions, a React web app that uses the API, a PostgreSQL database in Docker, and models served by Ollama on your laptop. There is no user login, document upload or cloud deployment yet (see [Missing or incomplete parts](#12-missing-or-incomplete-parts)). This guide covers the backend in depth; the web app's screens are described in the [README](../README.md). Everything below is taken from the code on this branch.
+> **Scope.** This describes the `integration` branch. It is a **local prototype**: two command-line scripts, a small HTTP API (FastAPI) over the same functions, a document library (upload, indexing status, open, download, delete), a React web app that uses the API, a PostgreSQL database in Docker, and models served by Ollama on your laptop. There is no user login or cloud deployment yet (see [Missing or incomplete parts](#12-missing-or-incomplete-parts)). This guide covers the backend in depth; the web app's screens are described in the [README](../README.md). Everything below is taken from the code on this branch.
 
 ---
 
@@ -13,7 +13,7 @@ RAG (retrieval-augmented generation) answers questions **from your own documents
 1. **Indexing** (`scripts/ingest.py`): read every file in `documents/`, cut the text into small chunks, turn each chunk into an *embedding* (a list of 768 numbers that captures its meaning), and store chunk + embedding in PostgreSQL.
 2. **Answering** (`scripts/ask.py`): turn the question into an embedding, find the stored chunks with the closest meaning, give those chunks to a chat model with strict instructions ("answer only from these passages and cite them"), and print the answer with its sources.
 
-The HTTP API runs the same two phases for other programs (the web app now, later the mini DMS): `POST /documents/ingest` and `POST /chat` (see [section 7](#7-http-api)).
+The HTTP API runs the same two phases for other programs, such as the web app: `POST /documents/ingest` and `POST /chat` (see [section 7](#7-http-api)). On top of indexing, a small **document library** lets people upload files into the documents folder, follows each file's indexing status, and serves or deletes the originals (see [section 7.6](#76-document-library)).
 
 ---
 
@@ -73,7 +73,7 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | **Settings** | Reads `.env` / environment variables, applies defaults, rejects bad values with a clear message | `src/rag/config.py` |
 | **Service checks** | Before any work: is Ollama reachable, are the models installed, can we connect to the database? Prints one line per problem | `src/rag/health.py` |
 | **Providers** | The **only** place that creates the chat model, the embedding model and the vector store. Everything else uses LangChain's standard interfaces, so backends can be swapped here | `src/rag/providers.py` |
-| **Database helpers** | Opens PostgreSQL connections (10 s timeout), converts the URL for the async driver, checks the table exists, lists indexed files (with their fingerprint and embedding model) | `src/rag/database.py` |
+| **Database helpers** | Opens PostgreSQL connections (10 s timeout), converts the URL for the async driver, checks the table exists, lists indexed files (with their fingerprint and embedding model), counts and deletes one file's chunks | `src/rag/database.py` |
 | **Loaders** | Finds supported files and turns them into LangChain `Document`s with metadata from the folder path | `src/rag/ingestion/loaders.py` |
 | **Chunking** | Splits each document into overlapping chunks that keep the metadata | `src/rag/ingestion/chunking.py` |
 | **Ingestion pipeline** | Decides per file: add, replace, skip or remove; stores chunks | `src/rag/ingestion/pipeline.py` |
@@ -84,9 +84,16 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | **Shared service layer** | The glue every entry point uses: build the store and chat model once (`build_services()`), run an ingest against what is already stored (`run_ingest()`), answer a question (`ask()`), and decide which sources to show (`sources_to_show()`) | `src/rag/service.py` |
 | **Indexing entry point** | Command-line script for phase 1 | `scripts/ingest.py` |
 | **Answering entry point** | Command-line script for phase 2 | `scripts/ask.py` |
-| **HTTP API** | FastAPI app: `/health`, `/chat`, `/documents/ingest`, error mapping, CORS; builds the services on first use | `src/rag/api/app.py` |
+| **HTTP API** | FastAPI app: `/health`, `/chat`, `/documents/ingest`, the ingestion job runner (with document status tracking), CORS; builds the services and the document library on first use | `src/rag/api/app.py` |
+| **Document endpoints** | `/documents`: upload, list, get, open/download, delete; the upload size limit | `src/rag/api/documents.py` |
+| **Backend errors** | Turns "Ollama or the database is unreachable" and "the model failed" into 503 and 502 | `src/rag/api/errors.py` |
 | **API schemas** | Request and response bodies (Pydantic), also published at `/docs` | `src/rag/api/schemas.py` |
 | **Ingestion jobs** | In-memory registry of background ingestion jobs: one at a time, guarded by a lock | `src/rag/api/jobs.py` |
+| **Document records** | The `documents` table: one row per original file, with its indexing status | `src/rag/dms/repository.py` |
+| **Document files** | Where an upload goes in the documents folder; checks names, type and content; saves without ever overwriting; refuses unsafe paths and links | `src/rag/dms/storage.py` |
+| **Document library** | Upload, list, open and delete across the files, the table and the index | `src/rag/dms/library.py` |
+| **Indexing status** | Wraps each ingestion run: claims waiting documents, records the outcome, adopts files already in the folder | `src/rag/dms/tracking.py` |
+| **Index access** | The only way the library reaches the `chunks` table (delete, count, list indexed files) | `src/rag/dms/index.py` |
 | **Local database** | PostgreSQL 18 with the pgvector extension, in Docker | `docker-compose.yml` |
 | **Web app** | React screens (Chat, Release notes, Documents, Ingestion) that call the HTTP API; in development Vite forwards `/health`, `/chat` and `/documents` to the API | `frontend/` |
 
@@ -111,6 +118,7 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | Output | `langchain-core` (`StrOutputParser`) | Plain text; no structured/JSON output |
 | Model server | **Ollama** (tested with 0.24) on `http://127.0.0.1:11434` | Runs on the CPU on a typical laptop |
 | HTTP API | **FastAPI** (validation with **Pydantic**), served by **uvicorn** | Plain `def` endpoints, run in a thread pool |
+| File uploads | `python-multipart` (FastAPI's multipart form parser) | `POST /documents` |
 | Tests | `pytest`, FastAPI `TestClient` (needs `httpx`) | Unit tests use fakes; integration tests use real Docker + Ollama |
 | Web app | **React 19** + **TypeScript**, built with **Vite**; tested with **Vitest** and Testing Library (jsdom) | Plain CSS, Inter font bundled locally; needs Node.js 22.12+ |
 
@@ -130,7 +138,9 @@ documents/documentum/16.2/release-notes/notes.pdf
            └ product  └ version └ doc_type
 ```
 
-A file placed higher up still works; the missing levels are simply empty (`None`), which means version filtering cannot select it. Supported types: `.pdf`, `.md`, `.txt`. Hidden files and folders (starting with `.`) are ignored.
+A file placed higher up still works; the missing levels are simply empty (`None`), which means version filtering cannot select it. Supported types: `.pdf`, `.md`, `.txt`. Hidden files and folders (starting with `.`) are ignored; the document library uses that for its half-written uploads (`.uploads/`).
+
+Files get there in two ways: copied in by hand, or uploaded through the document library (section 7.6), which stores each upload at exactly this path, so indexing and the chat filters treat both the same.
 
 ### 5.2 Load (`loaders.py`)
 
@@ -243,7 +253,7 @@ Before that, `ask.py` applies the same checks as `answer()`: a streamed reply th
 
 ## 7. HTTP API
 
-`src/rag/api/app.py` exposes both phases over HTTP with **FastAPI**, for the web app and later the mini DMS. It adds no RAG logic of its own: every endpoint calls `rag.health.check_services()` and the functions in `rag/service.py`, exactly like the scripts.
+`src/rag/api/app.py` exposes both phases over HTTP with **FastAPI**, for the web app and other programs. It adds no RAG logic of its own: the RAG endpoints call `rag.health.check_services()` and the functions in `rag/service.py`, exactly like the scripts. The document library's endpoints (`src/rag/api/documents.py`) call `rag/dms/` in the same way.
 
 Start it from the repository root (with Docker and Ollama running, for real answers):
 
@@ -259,6 +269,11 @@ Interactive documentation (try every endpoint from the browser) is at `http://12
 | `POST /chat` | Answers a question from the indexed documents | 200 with the answer and sources |
 | `POST /documents/ingest` | Starts indexing `DOCUMENTS_DIR` in a background job | 202 with a `job_id` |
 | `GET /documents/ingest/{job_id}` | Reports a job: `running`, `succeeded` (with its report) or `failed` (with a reason) | 200 |
+| `POST /documents` | Uploads one file into the document library and starts indexing it (section 7.6) | 201 with the document |
+| `GET /documents` | Lists the library, most recently added first | 200 |
+| `GET /documents/{id}` | One document | 200 |
+| `GET /documents/{id}/file` | The original file: shown in the browser, or `?download=true` to save it | 200 |
+| `DELETE /documents/{id}` | Deletes the file, its passages in the index and its record | 204 |
 
 ### 7.1 Health
 
@@ -320,10 +335,12 @@ GET /documents/ingest/3f9c…  →  200
 
 A failed job has `"status": "failed"`, `report: null` and a client-safe `error`: "Ollama or the database stopped responding. Check GET /health.", "The model service failed: <Ollama's reason>", or "Ingestion failed unexpectedly; see the server log.". Files indexed before the failure stay indexed; the next run picks up the rest. An unknown `job_id` returns 404.
 
+Every job, whether started here or by an upload, also keeps the document library's statuses in step with the run (section 7.6). The request and response above are unchanged by that. If the library can't be used (for example its table can't be created), the job indexes exactly as before, without statuses, and logs a warning.
+
 **Limitations of the job registry** (`api/jobs.py`):
 
-- Jobs are kept **in the server's memory**. Their history is **lost when the server restarts**, and a job interrupted by a restart is never marked failed.
-- Each uvicorn worker process would keep its own registry, so run the API as **one worker** (the default). A shared deployment needs a database table or a queue instead.
+- Jobs are kept **in the server's memory**. Their history is **lost when the server restarts**, and a job interrupted by a restart is never marked failed (the documents it was indexing go back to *pending* when the library next starts or the next run begins).
+- Each uvicorn worker process would keep its own registry, so run the API as **exactly one worker** (the default; never `--workers`), and stop the old process completely before starting a new one. A second process would run its own jobs at the same time and reset the first one's *processing* documents. A shared deployment needs a database table or a queue instead.
 - Only one job runs at a time; one lock guards all job state, so simultaneous requests cannot start two jobs. Only the 50 most recent finished jobs are kept.
 
 ### 7.4 Errors
@@ -338,17 +355,94 @@ Every error body is `{"detail": "..."}` (422 has FastAPI's list of field errors 
 | 503 | The service check fails | The problem lines from `check_services()`, joined |
 | 503 | Ollama or the database drops during a request | "Ollama or the database stopped responding. Check GET /health." |
 | 502 | The model service answers with an error (e.g. not enough memory) | "The model service failed: model requires more system memory …" |
-| 500 | `DOCUMENTS_DIR` doesn't exist (ingest) | "The documents folder (DOCUMENTS_DIR) doesn't exist on the server." |
+| 500 | `DOCUMENTS_DIR` doesn't exist (ingest, document library) | "The documents folder (DOCUMENTS_DIR) doesn't exist on the server." |
 | 500 | Anything unexpected | "Internal server error." (details only in the server log) |
 
-Which exceptions count as "unavailable" and which as "model failed" is decided in `providers.unavailable_errors()` and `providers.model_errors()`, so the API never imports Ollama or SQLAlchemy itself.
+The document library adds its own cases (the full list is in section 7.6): 400 and 413 for upload sizes, 404 for an unknown document or a missing original, 409 for a taken path or a delete while indexing runs, 422 for an upload that isn't acceptable, 500 for a file path that can't be used safely, and 500/503 with a step report for a delete that stopped part-way.
+
+Which exceptions count as "unavailable" and which as "model failed" is decided in `providers.unavailable_errors()` and `providers.model_errors()`, and turned into a status by `api/errors.py`, so the API never imports Ollama or SQLAlchemy itself.
 
 ### 7.5 Design notes
 
 - **Plain `def` endpoints.** FastAPI runs them in a thread pool, so a slow answer doesn't block other requests, and the vector store's synchronous calls work as they do in the scripts.
 - **Services built on first use.** The vector store and models are created by the first `/chat` or ingestion job and then reused. The server therefore starts, and `/health` answers, while Docker or Ollama is down; a failed build is retried by the next request.
-- **CORS.** Browsers may call the API from the origins in `API_CORS_ORIGINS` (default `http://localhost:5173`, the usual React dev server).
-- **No authentication.** Anyone who can reach the API can use every endpoint, so start it on `127.0.0.1` (as above), which only accepts connections from your own machine.
+- **CORS.** Browsers may call the API from the origins in `API_CORS_ORIGINS` (default `http://localhost:5173`, the usual React dev server), with `GET`, `POST` and `DELETE`.
+- **No authentication.** Anyone who can reach the API can use every endpoint, including uploading and deleting documents, so start it on `127.0.0.1` (as above), which only accepts connections from your own machine.
+
+### 7.6 Document library
+
+A small library over the documents folder: upload files, follow their indexing, open or download the originals, and delete them. It deliberately has no versions, approvals, check-in/check-out or permissions. The code is in `src/rag/dms/` and `src/rag/api/documents.py`; the web app's **Documents** screen uses these endpoints.
+
+**Where things live**
+
+- **Files:** in `DOCUMENTS_DIR`, at `<product>/<version>/<doc_type>/<file name>`, the same layout indexing reads (section 5.1). So an upload is indexed by the existing pipeline, and the chat filters work on it.
+- **Records:** one row per file in a `documents` table in the same PostgreSQL database, created by the app on first use (no migrations), like `chunks`. It is linked to the file's chunks only by `source` (the path relative to `DOCUMENTS_DIR`, the same value as `chunks.source`); nothing in the library changes the `chunks` table except deleting a document's chunks.
+
+| Column | Meaning |
+|---|---|
+| `id` | UUID |
+| `source` | Path relative to `DOCUMENTS_DIR`; unique |
+| `filename` | The name to show: the uploaded file's own name |
+| `product`, `version`, `doc_type` | Its folders; required for uploads, empty for a file found higher up the tree |
+| `content_type`, `size_bytes`, `file_hash` | Type, size and SHA-256 of the content |
+| `origin` | `upload`, or `folder` for a file that was already in the documents folder |
+| `status`, `error` | `pending`, `processing`, `indexed` or `failed`; `error` holds the reason when failed |
+| `chunk_count`, `added_at`, `indexed_at` | Passages in the index, and when the document was added and last indexed |
+
+Check constraints repeat the main rules (allowed statuses, the folders required for uploads, an error only when failed), so a bad row is refused by the database too.
+
+**Uploading** (`POST /documents`, multipart: `file`, `product`, `version`, `doc_type`)
+
+- **Size:** at most `MAX_UPLOAD_MB` (default 50). A declared `Content-Length` over the limit is refused before anything is read (413). Every upload, including a chunked one without `Content-Length`, is also counted as it arrives and stopped with 413 once past the limit; the server's temporary copy is removed.
+- **Names:** `product`, `version` and `doc_type` are required, trimmed, and must each be 1–64 letters, digits, dots, hyphens or underscores, starting and ending with a letter or digit, with no `..` and not a Windows device name such as `CON`.
+- **File type and content:** `.pdf`, `.md` or `.txt`, judged by the extension, never by what the browser says. A PDF must start like a PDF and be readable by the same loader indexing uses (not damaged or password-protected). Markdown and text must be UTF-8 without NUL bytes. Empty files are refused.
+- **Stored name:** the last part of the uploaded name, with accents reduced to ASCII, other unsafe characters replaced by `_`, trailing dots and spaces dropped, and at most 120 characters (a Windows device name gets a `_` in front). The original name is kept in `filename` for display. If a folder or file already exists with different capitals, its existing spelling is used, because Windows treats them as the same. The whole path must stay within 240 characters.
+- **Never overwrites:** if the path is taken (by a record or by a file), the upload is refused with 409. The file is written to the hidden `.uploads/` folder, checked there, then linked into place in one step that fails if a file appeared meanwhile.
+- **Safe on failure:** if recording the upload in the database fails, the file just saved is deleted again, so nothing is left unlisted.
+- **Result:** 201 with the document (status `pending`) and `ingest_job_id`: the indexing job the upload started, or `null` when it couldn't start one (see below).
+
+The web app checks the same name, type and empty-file rules before sending (`frontend/src/features/library/validation.ts`, compared against the Python rules); the server always checks again. The size limit is checked only by the server.
+
+**Indexing and statuses**
+
+- **Automatic start:** after a successful upload, the API starts an ingestion job if none is running and Ollama and the database are up. If a job is already running, the document waits; when that job ends, it starts a follow-up job for documents still pending. If the services are down, the document stays `pending` until indexing is started again (the next upload, the web app's **Index pending documents**, or `POST /documents/ingest`).
+- **One run, scoped updates:** each ingestion run first puts documents left `processing` by a stopped server back to `pending`, then claims the `pending` and `failed` documents as `processing`, runs the unchanged pipeline, and finishes **only the documents it claimed**, from the run's report:
+  - indexed, with its chunk count;
+  - failed: "No text could be extracted (for example a scanned PDF without a text layer).";
+  - failed: "The original file is no longer in the documents folder.".
+- **Other documents:** a document uploaded during a run wasn't claimed, so it stays `pending` for the next run. A document indexed earlier changes only if the run shows its file changed (its size, fingerprint and chunk count are updated) or disappeared (marked failed).
+- **A failed run** marks every document it claimed as failed, with the job's own reason (for example "Ollama or the database stopped responding. Check GET /health."). The next run tries them again. No follow-up job starts after a failed run.
+- **Files added by hand:** the first time the library is used after the server starts, and after every run, files in the folder that the library doesn't know yet are recorded where they are (`origin: folder`), not copied: `indexed` if the index already holds that exact file (same content and embedding model), otherwise `pending`; after a run, a file it found no text in is recorded as `failed`. A file whose upload is still in progress is never recorded this way.
+
+**Opening and downloading** (`GET /documents/{id}/file`): the original file, shown in the browser by default, or saved with `?download=true`. PDFs are sent as `application/pdf`. Markdown and text are always sent as `text/plain; charset=utf-8`, never HTML, with `X-Content-Type-Options: nosniff`, so an uploaded file can't run script in the app.
+
+**Deleting** (`DELETE /documents/{id}`) is permanent. It is refused with 409 while an ingestion job runs. Otherwise it removes, in this order, the file, its passages in the index, and its record, so a failure at any step is safe to retry:
+
+- the file can't be deleted (for example it is open in another program): nothing changes;
+- the passages can't be removed: the file is gone, the document stays listed, and deleting again finishes (the next ingestion run would also remove the passages);
+- the record can't be removed: deleting again finishes.
+
+A delete that stops part-way answers 500 (or 503 when the database is down) with `detail` saying what happened, plus `file_deleted`, `chunks_deleted` and `record_deleted`.
+
+**Unsafe paths.** Every path is checked by what it contains: relative, no `..`, no drive or `:`, no hidden parts, no control characters, no trailing dot or space, no Windows device names. Any symlink or junction on the way is refused, as is the `.uploads/` folder itself if it is a link, and a file with more than one hard link is neither served nor recorded. Such a case answers 500 "The document's file can't be used safely on this server (its path or a link on the way isn't allowed); see the server log." Code can't fully rule out a folder being swapped for a link between the check and the write on Windows, so on a server only the service account and administrators should be allowed to write to `DOCUMENTS_DIR`.
+
+**Errors from the document endpoints**
+
+| Status | When | Example `detail` |
+|---|---|---|
+| 400 | `Content-Length` isn't a number | "Invalid Content-Length header." |
+| 404 | Unknown document id | "Unknown document." |
+| 404 | The record exists but its file is gone | "The original file is missing on the server." |
+| 409 | The path is already taken | "A document already exists at acme/1.0/notes/notes.md." |
+| 409 | Delete while an ingestion job runs | "An ingestion job is running; delete the document when it has finished." (plus its `job_id`) |
+| 413 | Over `MAX_UPLOAD_MB` | "The file is larger than the 50 MB limit." |
+| 422 | Missing form field, or an id that isn't a UUID | FastAPI's field errors |
+| 422 | Unacceptable upload | "Only .md, .pdf, .txt files can be uploaded.", "version must be 1-64 letters, …", "This PDF can't be read; it may be damaged or password-protected.", "Text and Markdown files must be saved as UTF-8.", "The file is empty." |
+| 500 | Unsafe path or link | "The document's file can't be used safely on this server …" |
+| 500 | The disk refused the upload | "The file couldn't be stored on the server." |
+| 500 / 503 | A delete stopped part-way | What was done, plus `file_deleted`, `chunks_deleted`, `record_deleted` |
+| 503 | `DATABASE_URL` isn't set | "DATABASE_URL is not set, so documents can't be stored." |
+| 503 | The database stops responding | "Ollama or the database stopped responding. Check GET /health." |
 
 ---
 
@@ -366,7 +460,8 @@ Settings come from `.env` (copy `.env.example`) or from environment variables; r
 | `OLLAMA_KEEP_ALIVE_MINUTES` | `30` | How long Ollama keeps a model loaded after a call (`-1` = until Ollama stops); Ollama's own default of 5 minutes makes the next answer 15–30 s slower |
 | `CHUNK_SIZE` | `1000` | Maximum characters per chunk |
 | `CHUNK_OVERLAP` | `150` | Characters repeated between neighbouring chunks (must be smaller than `CHUNK_SIZE`) |
-| `DOCUMENTS_DIR` | `documents` | Folder that `ingest.py` reads (can also be passed with `--documents-dir`) and the only folder `POST /documents/ingest` reads. Relative paths are resolved from the folder the script or server is started in |
+| `DOCUMENTS_DIR` | `documents` | Folder that `ingest.py` reads (can also be passed with `--documents-dir`), the only folder `POST /documents/ingest` reads, and where the document library stores uploads. Relative paths are resolved from the folder the script or server is started in |
+| `MAX_UPLOAD_MB` | `50` | Largest file the document library accepts (must be above 0) |
 | `VECTOR_STORE` | `pgvector` | Only `pgvector` is supported |
 | `VECTOR_TABLE` | `chunks` | Table name (letters, digits and `_` only) |
 | `DATABASE_URL` | none (required) | `.env.example` points it at the local Docker database: `postgresql://rag:…@127.0.0.1:5433/rag` |
@@ -387,7 +482,7 @@ Declared in `pyproject.toml` (there is no `requirements.txt`):
 | core | `python-dotenv`, `psycopg[binary]`, `langchain-core`, `langchain-text-splitters`, `pypdf` | Always |
 | `ollama` | `langchain-ollama` | Ollama chat and embedding models |
 | `pgvector` | `langchain-postgres`, `asyncpg` | PostgreSQL vector store |
-| `api` | `fastapi`, `uvicorn` | The HTTP API |
+| `api` | `fastapi`, `uvicorn`, `python-multipart` | The HTTP API (`python-multipart` reads file uploads) |
 | `dev` | `pytest`, `httpx` | Running tests (`httpx` is needed by FastAPI's `TestClient`) |
 
 External services: **Docker Desktop** (for the database) and **Ollama** with the two models pulled.
@@ -432,7 +527,7 @@ ollama pull nomic-embed-text
 cd frontend && npm install && npm run dev
 ```
 
-Re-run step 5 (or `POST /documents/ingest`) whenever files in `documents/` are added, changed or removed. Stop the database with `docker compose down` (data is kept); `docker compose down -v` deletes it.
+Re-run step 5 (or `POST /documents/ingest`) whenever files in `documents/` are added, changed or removed by hand; files uploaded through the web app's **Documents** screen are indexed on their own. Stop the database with `docker compose down` (data is kept); `docker compose down -v` deletes it.
 
 **Expect slow answers on a laptop CPU** with `gemma3:4b` (measured on a 4-core laptop):
 
@@ -449,7 +544,7 @@ Re-run step 5 (or `POST /documents/ingest`) whenever files in `documents/` are a
 cd frontend && npm run typecheck && npm test && npm run build                                       # web app
 ```
 
-Unit tests use stand-ins (a fake vector store, LangChain's `FakeListChatModel`, fake Ollama/database responses); the API tests call the app through FastAPI's `TestClient`. Integration tests are marked `integration` and are skipped by the default `pytest` run. They create and drop their own temporary tables, so your `chunks` table is not touched; the API integration test (`tests/integration/test_api_live.py`) also uses its own temporary documents folder and checks `/health`, ingestion through the API, and `/chat` answering from the document it indexed. Add `-p no:warnings` to hide a harmless deprecation warning from the `langsmith` package on Python 3.14.
+Unit tests use stand-ins (a fake vector store, LangChain's `FakeListChatModel`, fake Ollama/database responses); the API tests call the app through FastAPI's `TestClient`. Integration tests are marked `integration` and are skipped by the default `pytest` run. They create and drop their own temporary tables, so your `chunks` and `documents` tables are not touched; the API integration test (`tests/integration/test_api_live.py`) also uses its own temporary documents folder and checks `/health`, ingestion through the API, and `/chat` answering from the document it indexed. The document library's live tests (`test_documents_*_live.py`) need only the database: they cover the table and its rules, the endpoints end to end, status tracking, concurrent uploads and recovery after a restart. Add `-p no:warnings` to hide a harmless deprecation warning from the `langsmith` package on Python 3.14.
 
 ### When something is not running
 
@@ -476,12 +571,20 @@ RAG/
 │   ├── config.py            # settings
 │   ├── health.py            # service checks
 │   ├── providers.py         # chat model, embeddings, vector store (the only backend-specific code)
-│   ├── database.py          # psycopg connections, URL helpers, table_exists, indexed_files
+│   ├── database.py          # psycopg connections, URL helpers, table_exists, indexed_files, chunk counts/deletes
 │   ├── service.py           # shared glue for scripts and API: build_services, run_ingest, ask
 │   ├── api/
-│   │   ├── app.py           # FastAPI app: /health, /chat, /documents/ingest
+│   │   ├── app.py           # FastAPI app: /health, /chat, /documents/ingest, the job runner
+│   │   ├── documents.py     # /documents: upload, list, get, file, delete; upload size limit
+│   │   ├── errors.py        # backend failures → 503 / 502
 │   │   ├── schemas.py       # request/response models
 │   │   └── jobs.py          # in-memory ingestion job registry
+│   ├── dms/                 # the document library
+│   │   ├── repository.py    # the documents table and its status changes
+│   │   ├── storage.py       # files in DOCUMENTS_DIR: names, checks, safe save and delete
+│   │   ├── library.py       # upload / list / open / delete; build_library()
+│   │   ├── tracking.py      # indexing status around each run; adopting existing files
+│   │   └── index.py         # the library's access to the chunks table
 │   ├── ingestion/
 │   │   ├── loaders.py       # files → Documents + metadata
 │   │   ├── chunking.py      # Documents → chunks
@@ -492,7 +595,7 @@ RAG/
 │       ├── prompts.py       # ANSWER_PROMPT, format_context, source_label
 │       ├── llm.py           # LCEL chain, answer(), stream_answer()
 │       └── citations.py     # merge repeated citations; spot replies that aren't answers
-├── frontend/                # React + TypeScript web app (Vite); src/features/ holds one folder per screen
+├── frontend/                # React + TypeScript web app (Vite); src/features/ holds one folder per screen (library/ is Documents)
 ├── tests/unit/              # fast tests with fakes
 ├── tests/integration/       # live tests (Docker + Ollama)
 ├── docs/                    # these guides
@@ -510,14 +613,15 @@ RAG/
 
 **Not built:**
 
-- **API features:** no authentication, no document upload (ingestion only reads `DOCUMENTS_DIR`), no streaming `/chat` (the whole answer arrives at once), no way to cancel an ingestion job.
-- **Database migrations:** the `chunks` table is created by `providers.get_vector_store()`; there is no schema file or migration tool.
+- **API features:** no authentication, no streaming `/chat` (the whole answer arrives at once), no way to cancel an ingestion job.
+- **Database migrations:** the `chunks` and `documents` tables are created by the app on first use; there is no schema file or migration tool.
+- **Document library features:** one file per upload, no upload progress, no replacing a document in place (delete it, then upload again), no editing of product, version or type, and no versions, approvals, check-in/check-out or permissions.
 - **Reranking:** retrieved chunks are used in distance order as returned.
 - **Providers:** only Ollama (models) and pgvector (storage); no Azure or other providers.
 - **File types:** only PDF, Markdown and text. No Word, Excel, PowerPoint or HTML; no OCR for scanned PDFs.
 - **Search:** vector search only. No keyword/full-text search, no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents).
 - **Smarter chunking:** no splitting by Markdown headings; tables in PDFs come out as plain text in reading order.
-- **Product features:** no mini document-management system (DMS), dedicated release-notes view, user accounts or permissions. The web app's Documents and Release notes screens point to these but don't provide them yet.
+- **Product features:** no dedicated release-notes view, user accounts or permissions. The web app's Release notes screen places version-scoped questions in Chat instead.
 - **Deployment:** runs only on a developer machine; no server deployment, no production server settings for uvicorn.
 
 **Known limitations and inconsistencies:**
@@ -528,8 +632,15 @@ RAG/
 - No structured (JSON) output parsing: answers are plain text with `[n]` citations.
 - The small `gemma3:4b` model can miss details spread over several passages.
 - Each script run spends roughly 1–9 s setting up the Ollama connection (the Ollama client library loads HTTPS certificates even for the local plain-HTTP address). The API pays this once, when it builds its services.
-- Ingestion jobs live in the API server's memory: history is lost on restart, a restart mid-job leaves no record, and the API must run as a single worker process.
-- A failed ingestion job reports no partial results, because `ingest()` returns its report only when it finishes.
+- Ingestion jobs live in the API server's memory: history is lost on restart, and a restart mid-job leaves no record of the job.
+- **The API must run as exactly one uvicorn worker process, and an old process must be stopped completely before a new one starts.** The job runner and the document statuses depend on it: a second process would ingest at the same time and put the first one's *processing* documents back to *pending*. This is documented, not enforced.
+- A failed ingestion job reports no partial results, because `ingest()` returns its report only when it finishes. For the same reason, one failure (Ollama stopping, or a file that passed the upload checks but breaks the pipeline) marks **every** document the run was indexing as failed with the same reason; the next run retries them all.
+- Failed documents are retried by every run, so a PDF without text briefly shows *processing* again on each run before going back to *failed*.
+- No follow-up run starts after a failed run, so documents uploaded during it stay *pending* until indexing is started again.
+- Deleting a document is refused while any ingestion job runs.
+- Files put in the documents folder by hand appear in the library only when it starts or after the next run, and wait as *pending* until a run happens; nothing starts indexing at server start-up. The first library request after a start reads every such file once to fingerprint it.
+- Links and hard links inside the documents folder are refused, but the ingestion pipeline (unchanged) may still index files reached that way. On a server, only the service account and administrators should be able to write to `DOCUMENTS_DIR`.
+- A crash in the middle of saving an upload can leave a temporary file in `.uploads/`; indexing ignores it, but nothing deletes it.
 - `/health` (and the check before `/chat` and ingestion) takes about 12 s to report a stopped database, because of the 10 s connection timeout.
 - `.env.example` mentions a remote PostgreSQL (through an SSH tunnel) as an alternative, but no remote database is set up for this app yet.
 - The `documents/` folder convention assumes versioned product documentation; files outside it work but cannot be filtered by version.

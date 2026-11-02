@@ -1,6 +1,6 @@
-# Under the hood: ingestion and answering
+# Under the hood: ingestion, answering and the document library
 
-What happens inside the two workflows of the local prototype (branch `integration`), file by file. Both run as one call chain: an entry point (a script in `scripts/`, or an HTTP endpoint in `src/rag/api/`) calls small functions in `src/rag/`. Five shared files sit underneath, and each workflow adds its own folder on top. The last section shows how the HTTP API reaches the same functions; the web app in `frontend/` only calls that API, so it adds no steps of its own.
+What happens inside the workflows of the local prototype (branch `integration`), file by file. Each runs as one call chain: an entry point (a script in `scripts/`, or an HTTP endpoint in `src/rag/api/`) calls small functions in `src/rag/`. Five shared files sit underneath, and each workflow adds its own folder on top. After ingestion and answering, a section shows how the HTTP API reaches the same functions, and the last workflow is the document library (`src/rag/dms/`), which only the API uses. The web app in `frontend/` only calls the API, so it adds no steps of its own.
 
 To run it, see [run-locally-windows.md](run-locally-windows.md). For the overall architecture, see [langchain-ollama-rag-architecture.md](langchain-ollama-rag-architecture.md).
 
@@ -8,11 +8,11 @@ To run it, see [run-locally-windows.md](run-locally-windows.md). For the overall
 
 | File | What it does |
 |---|---|
-| `src/rag/config.py` | `get_settings()` reads `.env` into a frozen `Settings` object (model names, Ollama URL and keep-alive time, chunk size, database URL, table name). It fills in defaults and rejects bad values early, such as an overlap bigger than the chunk size or an unsupported provider. Nothing else reads environment variables. |
+| `src/rag/config.py` | `get_settings()` reads `.env` into a frozen `Settings` object (model names, Ollama URL and keep-alive time, chunk size, database URL, table name, upload size limit). It fills in defaults and rejects bad values early, such as an overlap bigger than the chunk size or an unsupported provider. Nothing else reads environment variables. |
 | `src/rag/health.py` | `check_services()` runs before any real work. It asks Ollama's `/api/tags` whether it is up and has the models, and opens a test database connection. It returns plain-English problems; the scripts print them and exit, and the API returns them with status 503. |
 | `src/rag/providers.py` | The only file that knows the backends are Ollama and pgvector. It returns a chat model (`ChatOllama`, temperature 0), embeddings (`OllamaEmbeddings`) and the vector store (`PGVectorStore`). Both models send a keep-alive time with every call (`OLLAMA_KEEP_ALIVE_MINUTES`, default 30), so Ollama keeps them loaded between questions instead of unloading them after its default 5 idle minutes; reloading the chat model costs 15–30 s. On first use it creates the `chunks` table, sizing the vector column by embedding a test string and counting the numbers (768). `METADATA_COLUMNS` defines which metadata become real SQL columns: source, file_hash, product, version, doc_type, page, embedding_model. `unavailable_errors()` and `model_errors()` list the backend exceptions that mean "couldn't reach Ollama or the database" and "the model returned an error"; the API uses them to choose 503 or 502. |
 | `src/rag/service.py` | The glue every entry point shares, so scripts and API don't each repeat it. `build_services()` creates the vector store and chat model once (a `Services` object). `run_ingest()` looks up what is already stored and runs `ingest()`. `ask()` retrieves, answers and returns the sources to show. `sources_to_show()` holds the rule "no sources when the answer is 'I don't know'". |
-| `src/rag/database.py` | Plain SQL helpers that sit beside LangChain: open a connection (10 s timeout), convert the URL to the `postgresql+asyncpg://` form the vector store needs, check whether a table exists, and `indexed_files()`, which lists what is already stored. |
+| `src/rag/database.py` | Plain SQL helpers that sit beside LangChain: open a connection (10 s timeout), convert the URL to the `postgresql+asyncpg://` form the vector store needs, check whether a table exists, and `indexed_files()`, which lists what is already stored. For the document library it also has `chunk_counts()` (passages per file) and `delete_chunks()` (one file's passages), which work without Ollama. |
 
 ## Workflow 1: Ingestion (`scripts/ingest.py`)
 
@@ -155,8 +155,11 @@ POST /chat  {"question", "product"?, "version"?, "k"?}
 POST /documents/ingest  (no body)
  ├─ DOCUMENTS_DIR exists?                       → 500 if not
  ├─ check_services(need_chat_model=False)       health.py    → 503 if a problem
- ├─ IngestJobs.start()                          api/jobs.py  → 409 if a job is running
- ├─ background thread: run_ingest()             service.py   → jobs.succeed(report) or jobs.fail(message)
+ ├─ start_job() → IngestJobs.start()            api/app.py, api/jobs.py  → 409 if a job is running
+ ├─ background thread: tracked_ingest()         api/app.py
+ │   ├─ library.tracker.run(run_ingest)         dms/tracking.py + service.py  (plain run_ingest() if the library is unavailable)
+ │   ├─ jobs.succeed(report) or jobs.fail(message)
+ │   └─ after success: documents still pending? → start another job
  └─ 202 with job_id
 
 GET /documents/ingest/{job_id}
@@ -167,8 +170,9 @@ GET /documents/ingest/{job_id}
 
 - `create_app()` builds the FastAPI app. The module-level `app = create_app()` is what uvicorn serves; tests call `create_app()` with their own settings and fake services.
 - Endpoints are plain `def` functions. FastAPI runs them in a thread pool, so a 30-second answer doesn't block other requests, and the vector store's synchronous calls work as in the scripts.
-- `get_services()` builds the store and chat model on the first request that needs them, under a lock, and reuses them afterwards. A failed build isn't kept, so the next request tries again. This is also why the server starts, and `/health` answers, while Docker or Ollama is down.
-- `_backend_failure()` turns exceptions into responses: `providers.unavailable_errors()` → 503 "Ollama or the database stopped responding", `providers.model_errors()` → 502 with Ollama's reason. Anything else becomes a generic 500; the details go only to the server log.
+- `get_services()` builds the store and chat model on the first request that needs them, under a lock, and reuses them afterwards. A failed build isn't kept, so the next request tries again. This is also why the server starts, and `/health` answers, while Docker or Ollama is down. `get_library()` does the same for the document library.
+- `start_job()` registers a job and starts its thread; both `POST /documents/ingest` and an upload use it, so there is one job runner. `start_indexing_if_idle()` is the upload's version: it starts a job only if none is running and the services are up, and never raises. `tracked_ingest()` runs the ingestion inside the library's `IndexingTracker` so document statuses follow the run.
+- `backend_failure()` (in `api/errors.py`) turns exceptions into responses: `providers.unavailable_errors()` → 503 "Ollama or the database stopped responding", `providers.model_errors()` → 502 with Ollama's reason. Anything else becomes a generic 500; the details go only to the server log.
 - `_source()` turns each passage into a `ChatSource`: its number, path, product, version, doc_type, page, distance and the whole passage text as `excerpt`.
 
 ### `api/schemas.py`: the request and response bodies
@@ -178,12 +182,72 @@ Pydantic models that validate input and describe output; FastAPI also publishes 
 ### `api/jobs.py`: the ingestion job registry
 
 - `IngestJobs` holds jobs in a dictionary guarded by **one lock**. `start()` checks for a running job and registers the new one in the same locked step, so two simultaneous requests can't both start a job; the loser gets `JobAlreadyRunning` and the API returns 409 with the running job's id.
-- `succeed()` and `fail()` record the result and free the slot. `get()` returns an immutable snapshot. Only the 50 most recent finished jobs are kept.
-- It lives **in memory**: history disappears when the server restarts, and each uvicorn worker process would have its own. Run a single worker; a shared deployment would move jobs to a database table or a queue.
+- `succeed()` and `fail()` record the result and free the slot. `get()` returns an immutable snapshot, and `running()` the job running now, if any. Only the 50 most recent finished jobs are kept.
+- It lives **in memory**: history disappears when the server restarts, and each uvicorn worker process would have its own. Run exactly one worker, and stop the old process completely before starting a new one: the document library's status tracking relies on this too. A shared deployment would move jobs to a database table or a queue.
+
+## Workflow 3: The document library (`src/rag/dms/`)
+
+Upload files into the documents folder, follow their indexing, serve and delete the originals. Only the API uses it (`src/rag/api/documents.py`); the scripts don't. It never runs the pipeline itself: it records what an upload changed, and the ingestion job runner (above) indexes it.
+
+```
+POST /documents  (multipart: file, product, version, doc_type)
+ ├─ UploadSizeLimit                              api/documents.py → 413 over MAX_UPLOAD_MB (from Content-Length, or counted as it arrives)
+ ├─ library()                                    api/documents.py → 503 without DATABASE_URL, 500 without DOCUMENTS_DIR; build_library() on first use
+ ├─ DocumentLibrary.upload()                     dms/library.py
+ │   ├─ check_folder_name() ×3, clean_filename() dms/storage.py   → 422 if not acceptable
+ │   ├─ source_for()                             dms/storage.py   → <product>/<version>/<doc_type>/<name>, existing capitals reused
+ │   ├─ mark the path as uploading; taken?       → 409
+ │   ├─ DocumentStorage.save()                   dms/storage.py   → .uploads/ temp file, size + SHA-256, check_content(), link into place
+ │   └─ DocumentRepository.add()                 dms/repository.py → status pending (the file is deleted again if this fails)
+ ├─ start_indexing_if_idle()                     api/app.py       → a job, or none (job running, or services down)
+ └─ 201 with the document and ingest_job_id
+
+GET /documents, GET /documents/{id}             → DocumentRepository.list_all() / get()
+GET /documents/{id}/file[?download=true]        → readable_file() (no links, one hard link) → FileResponse
+DELETE /documents/{id}                          → 409 if a job runs; else file → delete_chunks() → record
+
+An ingestion job (any trigger): IndexingTracker.run()   dms/tracking.py
+ ├─ release_processing()                         back to pending: left over by a stopped server
+ ├─ claim_for_indexing()                         pending + failed → processing
+ ├─ run_ingest()                                 service.py (the unchanged pipeline)
+ └─ from the report: claimed → indexed / failed; changed or vanished files; adopt files not yet recorded
+```
+
+### `dms/repository.py`: the documents table
+
+- `DocumentRepository` reads and writes the `documents` table with psycopg, one short connection per call, like `database.py`. `create_table()` creates it on first use; check constraints repeat the main rules, so the database refuses a bad row too.
+- `NewDocument` is a file about to be recorded. It checks the path is a plain relative path and that product, version and type match its folders exactly as the loaders read them, so a record and its chunks always agree.
+- `add()` records an upload as `pending`, and raises `DuplicateDocument` if the path is taken. `adopt()` records a file found in the folder (`origin: folder`) as indexed, pending or failed, and does nothing if the path is already recorded, so it never takes over an upload.
+- Status changes are scoped: `claim_for_indexing()` turns `pending` and `failed` rows into `processing`, and `mark_indexed()` / `mark_failed()` only change rows that are `processing`. A run therefore never changes a document it didn't claim. `refresh_indexed()` and `mark_missing()` only touch `indexed` rows; `release_processing()` puts `processing` rows back to `pending`.
+
+### `dms/storage.py`: the files
+
+- `check_folder_name()` checks product, version and type: trimmed, 1–64 letters, digits, `.`, `_` or `-`, letters or digits at both ends, no `..`, no Windows device names. `clean_filename()` keeps the last part of the uploaded name, reduces it to safe ASCII characters (at most 120), and refuses any type but `.pdf`, `.md` and `.txt`. The web app repeats these rules in `frontend/src/features/library/validation.ts`; change both together.
+- `check_content()` refuses a PDF that doesn't start like one or that the loader can't read, text that isn't UTF-8 or contains NUL bytes; `save()` refuses an empty file.
+- `save()` streams the upload into the hidden `.uploads/` folder (counting the size and computing the SHA-256 as it goes), checks it, then puts it in place with `os.link`, which fails if a file appeared at that path, so an existing document is never overwritten. The temporary file is always removed.
+- `path_of()` is how every stored path is turned into a file: it checks the path itself (relative, no `..`, no drive or `:`, no hidden parts, no control characters, no trailing dot or space, no device names) and refuses any symlink or junction on the way, without resolving paths, which gave inconsistent results under concurrent uploads on Windows. `save()` checks again just before writing, and refuses a linked `.uploads/` folder. `readable_file()` also refuses a file with more than one hard link.
+
+### `dms/library.py`: uploads, lookups and deletes
+
+- `DocumentLibrary.upload()` checks the names, works out the path, and keeps it in an "uploading" set until the record exists, so a concurrent ingestion run never records the new file as found in the folder (which would turn the upload into a duplicate). If recording fails, it deletes the file it just saved.
+- `delete()` removes the file, then its chunks (through `IndexAccess`), then the record. If a step fails it raises `DeletionFailed` with what was done; every step is safe to repeat, so deleting again finishes the job.
+- `build_library()` creates the table, puts documents left `processing` back to `pending`, and adopts files already in the folder. The API calls it on first use, once per server process, before that process's first tracked run, which is why it can't reset a running job when only one process runs.
+
+### `dms/tracking.py`: indexing status around each run
+
+- `IndexingTracker.run()` wraps one ingestion run: release, claim, run the unchanged pipeline, then record the outcome from its `IngestReport`. Claimed files in `added` / `updated` / `unchanged` become indexed with their chunk count (`chunk_counts()`); a file in `no_text` becomes failed ("No text could be extracted…"); a claimed file the run didn't see becomes failed ("The original file is no longer in the documents folder."). For documents it didn't claim, `updated` refreshes an indexed record and `removed` marks it failed.
+- If the run raises, every claimed document is marked failed with the job's client-safe message, and the error is passed on. If even that can't be recorded, or recording a successful run fails half-way, the claims go back to `pending`, or the next run's release step frees them.
+- `adopt_untracked()` scans the folder for files without a record; `run()` also adopts files the report saw. Both skip files mid-upload and files `readable_file()` refuses.
+
+### `dms/index.py` and `api/documents.py`
+
+- `IndexAccess` bundles the three things the library needs from the `chunks` table (delete one file's chunks, count chunks per file, list indexed files) and the current embedding model. In the app they are `database.py` helpers; in tests, fakes.
+- `api/documents.py` holds the `/documents` endpoints and `UploadSizeLimit`, an ASGI middleware that caps the upload body: it refuses an oversized `Content-Length` before reading, and counts the bytes of every upload as they arrive, stopping with 413 once past the limit. This is needed because the form parser saves uploaded files to a temporary file, with no limit of its own, before the endpoint runs. Unsafe paths become a clear 500; a delete that stopped part-way returns what was done.
 
 ## Things worth knowing
 
 - **Same embedding model on both sides.** Questions and chunks must be embedded by the same model, or the distances are meaningless. That's why `embedding_model` is stored on every row, and why changing it makes ingest redo every file.
 - **LangChain stays inside `src/rag/`.** The scripts and the API only call our own functions (`build_services()`, `run_ingest()`, `ask()`, `retrieve()`, `stream_answer()`), and the tests swap in fake stores and models.
 - **No relevance cut-off.** You always get the top `k` chunks, even if they are weakly related. The prompt is the only guard against made-up answers; the checks in `citations.py` only catch replies that aren't answers, not wrong ones.
-- **Two database clients.** `PGVectorStore` uses asyncpg; `database.py` uses psycopg for the small direct queries the vector store doesn't offer, such as "which files are stored, with which hash".
+- **Two database clients.** `PGVectorStore` uses asyncpg; `database.py` and the document library use psycopg for the small direct queries the vector store doesn't offer, such as "which files are stored, with which hash".
+- **The library and the index meet only at `source`.** A `documents` row and a file's chunks share the same `source` path; there is no foreign key, and the library changes the `chunks` table only to delete one document's chunks.

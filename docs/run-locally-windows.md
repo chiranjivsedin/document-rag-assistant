@@ -78,6 +78,8 @@ docker compose ps
 
 ## 6. Add documents and index them
 
+Two ways: **upload them in the web app** (step 9, the **Documents** screen), which stores and indexes them for you, or **copy them into the folder** and index them as below.
+
 Put files in `documents\<product>\<version>\<doc_type>\`, for example:
 
 ```
@@ -113,7 +115,7 @@ Then:
 
 ## 8. Run the HTTP API (optional)
 
-The API does the same as steps 6 and 7, but over HTTP, so other programs (the web app in step 9, later the mini DMS) can use it. Docker and Ollama must be running as in step 5.
+The API does the same as steps 6 and 7, but over HTTP, so other programs (such as the web app in step 9) can use it. It also runs the document library: uploading, listing, opening and deleting documents. Docker and Ollama must be running as in step 5.
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
@@ -124,6 +126,7 @@ The API does the same as steps 6 and 7, but over HTTP, so other programs (the we
 - `--port 8000` is the port: the API is at `http://127.0.0.1:8000`.
 - Start it from the project folder: `DOCUMENTS_DIR` (default `documents`) is looked up from where you start it.
 - The window stays busy while the server runs and shows one line per request. Press **Ctrl+C** to stop it.
+- Run **one** server only: don't add `--workers`, and don't start a second copy while one is running. Indexing jobs and the document library's statuses live in this one process; a second one would index at the same time and reset the first one's work.
 
 Open **http://127.0.0.1:8000/docs** in a browser to see every endpoint and try it ("Try it out", then "Execute"). From a second PowerShell window you can also call it directly:
 
@@ -138,12 +141,18 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/chat -ContentType "app
 # Index documents\ in the background, then check on the job until its status is no longer "running"
 $job = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/documents/ingest
 Invoke-RestMethod "http://127.0.0.1:8000/documents/ingest/$($job.job_id)"
+
+# The document library: list it, upload a file (curl.exe, which comes with Windows, sends the form), then delete it
+(Invoke-RestMethod http://127.0.0.1:8000/documents).documents | Format-Table filename, status, product, version
+curl.exe -F "file=@C:\path\to\notes.pdf" -F product=documentum -F version=16.2 -F doc_type=release-notes http://127.0.0.1:8000/documents
+Invoke-RestMethod -Method Delete "http://127.0.0.1:8000/documents/<id from the list>"
 ```
 
 - **`/health`** returns `status`, the two model names and a list of `problems` (empty when all is well).
 - **`/chat`** takes `question` (required), `product`, `version` and `k` (1–20, default 5). It returns `answer`, `no_answer` (true for "I don't know"), and `sources`, each with a `number` matching the `[n]` in the answer and an `excerpt` (the whole passage the model was given). The whole answer arrives at once, after the same time as in step 7.
 - **`/documents/ingest`** always indexes `DOCUMENTS_DIR`; it doesn't take a folder from the request. It answers straight away with a `job_id`. Checking that job shows `running`, then `succeeded` with the same counts `ingest.py` prints, or `failed` with a reason. Only one job runs at a time: starting a second one returns an error naming the running job.
-- **Job history is kept in memory only.** After you stop or restart the server, old job ids are unknown (404), and a job that was running when you stopped it never finishes. Files it had already indexed stay indexed; run ingestion again to finish the rest.
+- **Job history is kept in memory only.** After you stop or restart the server, old job ids are unknown (404), and a job that was running when you stopped it never finishes. Files it had already indexed stay indexed; run ingestion again to finish the rest. (Documents that job was indexing show as *pending* again once the server is back.)
+- **`/documents`** is the document library. An upload takes a `.pdf`, `.md` or `.txt` file of up to 50 MB (`MAX_UPLOAD_MB` in `.env`) with a product, version and document type, stores it at `documents\<product>\<version>\<doc_type>\` and starts indexing it when it can. `GET /documents/{id}/file` returns the original (`?download=true` to save it). Deleting removes the file, its passages and its record, and is refused while indexing runs. The full list of rules and errors is in the [architecture guide](langchain-ollama-rag-architecture.md#76-document-library).
 - **Errors** come back as `{"detail": "..."}` and PowerShell shows them in red: 422 for a bad request (for example `k` above 20), 503 when Ollama or the database is down (same messages as step 10 below), 502 when the model itself fails (for example not enough memory), 500 for anything unexpected.
 
 ## 9. Run the web app (optional)
@@ -160,6 +169,13 @@ npm run dev
 - `npm run dev` starts the development server. Open **http://localhost:5173** in a browser. It forwards the app's requests to the API at `127.0.0.1:8000`, so no extra setup is needed.
 - **Chat:** type a question, optionally with a product, version and number of passages, and press Enter. Click a `[n]` citation or a source card to read the full passage it came from.
 - **Sidebar:** New chat, this session's questions (click one to jump back to it), a service-status card with a re-check button, and a System / Light / Dark theme switch. When a service is down, Chat also shows a notice saying which one and why.
+- **Documents:** the document library.
+  - **Upload** a file with its product, version and document type (the boxes suggest values already in use). Mistakes are shown on the form before anything is sent.
+  - The list shows every document, including files copied into the folder by hand, with its status: *Pending*, *Processing*, *Indexed* (with its number of passages) or *Failed* (with the reason). While a document is waiting, the list checks again every few seconds.
+  - **Search** by name, path, product, version or type, and **filter** by status.
+  - **Open** shows the original in a new tab; **Download** saves it.
+  - **Delete** asks for confirmation, then removes the file, its passages and its record.
+  - **Index pending documents** starts indexing by hand, for example after Ollama was down.
 - **Ingestion:** the same indexing as step 6, with progress and results. **Release notes:** pick a version and a topic to place a version-scoped question in Chat.
 - Press **Ctrl+C** in this window to stop the web app.
 
@@ -189,7 +205,7 @@ cd frontend; npm run typecheck; npm test; npm run build; cd ..
 ```
 
 - The first runs the **unit tests**, including the API's. They use stand-ins, so Docker and Ollama aren't needed, and they take well under a minute. Integration tests are skipped in this run.
-- The second runs only the **integration tests** against the real database and Ollama. Expect a few minutes, mostly waiting for answers. They use their own temporary tables (and, for the API test, their own temporary documents folder), so your indexed data isn't touched. If Docker or Ollama isn't running, they fail rather than skip.
+- The second runs only the **integration tests** against the real database and Ollama. Expect a few minutes, mostly waiting for answers. They use their own temporary tables (and, for the API and document library tests, their own temporary documents folders), so your indexed data and document library aren't touched. If Docker or Ollama isn't running, they fail rather than skip.
 - `-p no:warnings` hides a harmless warning from a LangChain dependency on Python 3.14.
 - To run one test: `.\.venv\Scripts\python.exe -m pytest tests\unit\test_chunking.py::<test_name>`.
 - The last line checks the web app: type check, its tests (no services needed) and a production build.
