@@ -137,7 +137,7 @@ describe("App: chat across the shell", () => {
       .getAllByRole("button", { name: /^Q\d+\?$/ })
       .map((item) => item.textContent);
     expect(listed).toEqual(["Q10?", "Q9?", "Q8?", "Q7?", "Q6?", "Q5?", "Q4?", "Q3?", "Q2?", "Q1?"]);
-  });
+  }, 10_000); // types ten questions key by key: about 3.5 s alone, 6–7 s beside the other test files, over the default 5 s
 
   it("New chat starts an empty conversation and clears the session list", async () => {
     render(<App />);
