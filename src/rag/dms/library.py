@@ -1,21 +1,22 @@
 """The document library: uploads, lookups and deletions across the files, the documents table and the index.
 
 The shared glue behind the /documents endpoints, kept out of the endpoints themselves (as rag.service is for
-the RAG side). It never indexes anything: an upload is recorded as pending, and indexing is started separately.
+the RAG side). It never indexes anything itself: an upload is recorded as pending, and an ingestion run, wrapped
+by its IndexingTracker (rag.dms.tracking), indexes it and records the outcome.
 """
 
 import logging
+import threading
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import BinaryIO
 
-from rag import database
 from rag.config import Settings
+from rag.dms.index import IndexAccess, index_access
 from rag.dms.repository import DocumentRecord, DocumentRepository, DuplicateDocument, NewDocument
 from rag.dms.storage import CONTENT_TYPES, DocumentStorage, check_folder_name, clean_filename
+from rag.dms.tracking import IndexingTracker
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +59,19 @@ class DeletionFailed(Exception):
 
 
 class DocumentLibrary:
-    def __init__(self, storage: DocumentStorage, repository: DocumentRepository,
-                 delete_chunks: Callable[[str], int]):
-        """`delete_chunks(source)` removes a file's passages from the index and returns how many it removed."""
+    def __init__(self, storage: DocumentStorage, repository: DocumentRepository, index: IndexAccess):
         self.storage = storage
         self.repository = repository
-        self.delete_chunks = delete_chunks
+        self.index = index
+        self.tracker = IndexingTracker(repository, storage, index, self.is_uploading)
+        # Paths between "file saved" and "record added" by an upload, so a concurrent indexing run never
+        # adopts the file as found in the folder (which would make the upload fail as a duplicate).
+        self._uploading: set[str] = set()
+        self._uploading_lock = threading.Lock()
+
+    def is_uploading(self, source: str) -> bool:
+        with self._uploading_lock:
+            return source in self._uploading
 
     def upload(self, stream: BinaryIO, filename: str, product: str, version: str, doc_type: str) -> DocumentRecord:
         """Store an uploaded file and record it as pending.
@@ -75,6 +83,17 @@ class DocumentLibrary:
         doc_type = check_folder_name(doc_type, "doc_type")
         stored_name = clean_filename(filename)
         source = self.storage.source_for(product, version, doc_type, stored_name)
+        with self._uploading_lock:
+            if source in self._uploading:
+                raise DocumentExists(source)  # the same path is being uploaded right now
+            self._uploading.add(source)
+        try:
+            return self._store(stream, filename, source)
+        finally:
+            with self._uploading_lock:
+                self._uploading.discard(source)
+
+    def _store(self, stream: BinaryIO, filename: str, source: str) -> DocumentRecord:
         if self.repository.get_by_source(source) is not None or self.storage.exists(source):
             raise DocumentExists(source)
         try:
@@ -110,10 +129,11 @@ class DocumentLibrary:
         return document
 
     def original_file(self, document_id: uuid.UUID) -> tuple[DocumentRecord, Path]:
-        """The document and the path of its original file; raises FileMissing if the file is gone."""
+        """The document and the path of its original file; raises FileMissing if the file is gone, or
+        UnsafePath if it can't be served safely (e.g. it has another hard link)."""
         document = self.get(document_id)
-        path = self.storage.path_of(document.source)
-        if not path.is_file():
+        path = self.storage.readable_file(document.source)
+        if path is None:
             raise FileMissing(document.source)
         return document, path
 
@@ -130,7 +150,7 @@ class DocumentLibrary:
         try:
             self.storage.delete(document.source)
             steps = DeletionSteps(file_deleted=True)
-            self.delete_chunks(document.source)
+            self.index.delete_chunks(document.source)
             steps = DeletionSteps(file_deleted=True, chunks_deleted=True)
             self.repository.delete(document.id)
         except Exception as error:
@@ -148,17 +168,28 @@ class DocumentLibrary:
                          exc_info=cleanup_error)
 
 
-def build_library(settings: Settings) -> DocumentLibrary:
-    """Connect to the documents table (creating it on first use) and the documents folder."""
+def build_library(settings: Settings, table: str = "documents") -> DocumentLibrary:
+    """Connect to the documents table (creating it on first use) and the documents folder.
+
+    Documents left processing by a server that stopped mid-run go back to pending, and files already in the
+    documents folder are adopted, so the library lists everything the assistant can answer from. This runs
+    once per server process, before its first ingestion run, which is why it can't reset a running job: the
+    API must run as a single process (one uvicorn worker), and an old process must be stopped completely
+    before a new one starts.
+    """
     if not settings.database_url:
         raise ValueError("DATABASE_URL is required for the document library")
-    repository = DocumentRepository(settings.database_url)
+    repository = DocumentRepository(settings.database_url, table=table)
     repository.create_table()
-    return DocumentLibrary(
+    library = DocumentLibrary(
         storage=DocumentStorage(Path(settings.documents_dir), max_bytes=settings.max_upload_mb * 1024 * 1024),
         repository=repository,
-        delete_chunks=partial(database.delete_chunks, settings.database_url, settings.vector_table),
+        index=index_access(settings),
     )
+    repository.release_processing()
+    if library.storage.documents_dir.is_dir():
+        library.tracker.adopt_untracked()
+    return library
 
 
 def _display_name(original: str, stored_name: str) -> str:

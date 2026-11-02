@@ -5,9 +5,10 @@ relative to DOCUMENTS_DIR, the same value as chunks.source), never by a foreign 
 reads or writes the chunks table. Like that table, it is created by the application (`create_table()`);
 there are no migrations.
 
-Status moves pending -> processing -> indexed | failed. An indexing run first claims the pending rows
-(they become "processing"), and only claimed rows can be finished, so a run never changes a document it
-didn't claim, such as one indexed earlier.
+Status moves pending -> processing -> indexed | failed. An indexing run first claims the rows waiting for
+it (pending, or failed by an earlier run, so they are retried); they become "processing", and only claimed
+rows can be finished, so a run never marks a document it didn't claim, such as one indexed earlier or one
+uploaded while it was running.
 """
 
 import uuid
@@ -132,12 +133,17 @@ class DocumentRepository:
             raise DuplicateDocument(new.source)
         return row
 
-    def adopt(self, new: NewDocument, chunk_count: int) -> DocumentRecord | None:
-        """Track a file that is already in DOCUMENTS_DIR and already indexed, where it is.
+    def adopt(self, new: NewDocument, chunk_count: int | None = None, error: str | None = None
+              ) -> DocumentRecord | None:
+        """Track a file that is already in DOCUMENTS_DIR, where it is (it is not copied).
 
-        Returns None, changing nothing, if its source is already tracked.
+        Recorded as indexed when `chunk_count` is given, as failed when `error` is given, otherwise as
+        pending. Returns None, changing nothing, if its source is already tracked.
         """
-        return self._insert(new, origin="folder", status="indexed", chunk_count=chunk_count)
+        if error:
+            return self._insert(new, origin="folder", status="failed", chunk_count=None, error=error)
+        status = "pending" if chunk_count is None else "indexed"
+        return self._insert(new, origin="folder", status=status, chunk_count=chunk_count)
 
     def get(self, document_id: uuid.UUID) -> DocumentRecord | None:
         rows = self._fetch("SELECT * FROM {table} WHERE id = %s", (document_id,))
@@ -155,10 +161,12 @@ class DocumentRepository:
         """Remove the row only (not the file or its chunks); False if there was no such row."""
         return self._execute("DELETE FROM {table} WHERE id = %s", (document_id,)) == 1
 
-    def claim_pending(self) -> list[DocumentRecord]:
-        """Start an indexing run: every pending document becomes processing. Returns the claimed rows."""
+    def claim_for_indexing(self) -> list[DocumentRecord]:
+        """Start an indexing run: every pending or failed document becomes processing (failed ones are
+        retried). Returns the claimed rows."""
         return self._fetch(
-            "UPDATE {table} SET status = 'processing' WHERE status = 'pending' RETURNING *"
+            "UPDATE {table} SET status = 'processing', error = NULL "
+            "WHERE status IN ('pending', 'failed') RETURNING *"
         )
 
     def mark_indexed(self, document_id: uuid.UUID, chunk_count: int) -> bool:
@@ -186,15 +194,38 @@ class DocumentRepository:
         """Put documents left processing by an interrupted run (e.g. a server restart) back to pending."""
         return self._execute("UPDATE {table} SET status = 'pending' WHERE status = 'processing'")
 
-    def _insert(self, new: NewDocument, origin: Origin, status: Status, chunk_count: int | None
-                ) -> DocumentRecord | None:
+    def count_pending(self) -> int:
+        with database.connect(self._database_url) as conn:
+            return conn.execute(self._query("SELECT count(*) FROM {table} WHERE status = 'pending'")).fetchone()[0]
+
+    def refresh_indexed(self, source: str, file_hash: str, size_bytes: int, chunk_count: int) -> bool:
+        """Record that an indexed document's file changed on disk and was indexed again. Only touches a
+        document that is indexed; False if there was none."""
+        return self._execute(
+            "UPDATE {table} SET file_hash = %s, size_bytes = %s, chunk_count = %s, indexed_at = now() "
+            "WHERE source = %s AND status = 'indexed'",
+            (file_hash, size_bytes, chunk_count, source),
+        ) == 1
+
+    def mark_missing(self, sources: Iterable[str], error: str) -> int:
+        """Mark indexed documents whose file has disappeared from DOCUMENTS_DIR as failed. Returns how many."""
+        sources = list(sources)
+        if not sources:
+            return 0
+        return self._execute(
+            "UPDATE {table} SET status = 'failed', error = %s WHERE source = ANY(%s) AND status = 'indexed'",
+            (error, sources),
+        )
+
+    def _insert(self, new: NewDocument, origin: Origin, status: Status, chunk_count: int | None,
+                error: str | None = None) -> DocumentRecord | None:
         values = [getattr(new, column) for column in _COLUMNS]
         indexed_at = "now()" if status == "indexed" else "NULL"
         rows = self._fetch(
-            f"INSERT INTO {{table}} ({', '.join(_COLUMNS)}, origin, status, chunk_count, indexed_at) "
-            f"VALUES ({', '.join(['%s'] * len(_COLUMNS))}, %s, %s, %s, {indexed_at}) "
+            f"INSERT INTO {{table}} ({', '.join(_COLUMNS)}, origin, status, chunk_count, error, indexed_at) "
+            f"VALUES ({', '.join(['%s'] * len(_COLUMNS))}, %s, %s, %s, %s, {indexed_at}) "
             "ON CONFLICT (source) DO NOTHING RETURNING *",
-            (*values, origin, status, chunk_count),
+            (*values, origin, status, chunk_count, error),
         )
         return rows[0] if rows else None
 

@@ -6,6 +6,12 @@ uploads are indexed by the existing pipeline and the chat filters work on them u
 An upload is first written to a hidden temporary folder inside DOCUMENTS_DIR (the loaders skip hidden
 folders, so ingestion never sees a half-written file), checked there, then linked into place in one step that
 fails if a file already exists at that path: an existing document is never overwritten.
+
+Paths are checked by what they contain and for links (symlinks, junctions) on the way; see path_of(). Python
+on Windows can't open files relative to an already-checked folder, so a folder swapped for a link between the
+check and the write can't be ruled out in code: the checks are repeated just before writing, which narrows
+that window, and only the service account and administrators may write to DOCUMENTS_DIR (see the deployment
+runbook), which closes it.
 """
 
 import hashlib
@@ -30,7 +36,9 @@ _COPY_CHUNK = 1024 * 1024
 _FOLDER_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9 ._()-]+")
 # Names Windows reserves for devices, with or without an extension (CON, CON.pdf, ...).
-_RESERVED = re.compile(r"(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..*)?", re.IGNORECASE)
+_RESERVED = re.compile(r"(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(\..*)?", re.IGNORECASE)
+# Control characters (including NUL): never part of a stored file name.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class InvalidDocument(ValueError):
@@ -42,7 +50,8 @@ class DocumentTooLarge(InvalidDocument):
 
 
 class UnsafePath(Exception):
-    """A stored source doesn't resolve to a file inside DOCUMENTS_DIR (it was not written by this module)."""
+    """A path that can't be used safely: outside DOCUMENTS_DIR, through a link, a name Windows treats
+    specially, or a file with more than one hard link. Never caused by an upload's own names."""
 
 
 @dataclass(frozen=True)
@@ -125,7 +134,7 @@ class DocumentStorage:
             name = _existing_name(parent, name)
             parts.append(name)
             parent = parent / name
-        if len(str(parent.resolve())) > MAX_PATH_CHARS:
+        if len(os.path.abspath(parent)) > MAX_PATH_CHARS:
             raise InvalidDocument("The names are too long for the server's file system; use shorter ones.")
         return "/".join(parts)
 
@@ -133,11 +142,40 @@ class DocumentStorage:
         return self.path_of(source).exists()
 
     def path_of(self, source: str) -> Path:
-        """The file for a stored source; raises UnsafePath if it would leave DOCUMENTS_DIR."""
-        root = self.documents_dir.resolve()
-        path = (root / source).resolve()
-        if path == root or not path.is_relative_to(root) or any(p.startswith(".") for p in Path(source).parts):
+        """The file for a stored source; raises UnsafePath if it would leave DOCUMENTS_DIR.
+
+        The path stays inside because of what it may contain (relative, no "..", no drive, no hidden parts),
+        not by comparing resolved paths: under concurrent uploads on Windows, resolving the folder and the
+        path gave forms that didn't match, and a valid path was refused. A link (symlink or junction) on the
+        way could still lead elsewhere, so existing parts are checked for links; that reads each entry
+        itself and is stable.
+        """
+        parts = source.split("/")
+        if (not source or "\\" in source or ":" in source or _CONTROL.search(source)
+                or any(not _safe_part(part) for part in parts)):
             raise UnsafePath(f"{source!r} is not a document path inside DOCUMENTS_DIR")
+        path = self.documents_dir
+        for part in parts:
+            path = path / part
+            if _is_link(path):
+                raise UnsafePath(f"{source!r} goes through a link inside DOCUMENTS_DIR")
+        return path
+
+    def readable_file(self, source: str) -> Path | None:
+        """The existing file for a source, safe to read and serve; None if there is no such file.
+
+        Raises UnsafePath for a file with more than one hard link: another name for it may be outside
+        DOCUMENTS_DIR, and nothing this module writes has more than one link once saved.
+        """
+        path = self.path_of(source)
+        try:
+            links = path.stat().st_nlink
+        except OSError:
+            return None
+        if not path.is_file():
+            return None
+        if links > 1:
+            raise UnsafePath(f"{source!r} has {links} hard links")
         return path
 
     def save(self, stream: BinaryIO, source: str) -> SavedFile:
@@ -147,15 +185,16 @@ class DocumentStorage:
         already exists there (it is not touched).
         """
         target = self.path_of(source)
-        temp_dir = self.documents_dir / TEMP_FOLDER
-        temp_dir.mkdir(exist_ok=True)
-        temp = temp_dir / f"{uuid.uuid4().hex}{target.suffix.lower()}"
+        temp = self._temp_dir() / f"{uuid.uuid4().hex}{target.suffix.lower()}"
         try:
             size, digest = self._copy(stream, temp)
             if size == 0:
                 raise InvalidDocument("The file is empty.")
             check_content(temp, self.documents_dir)
+            # Check again just before creating folders and linking, in case a folder became a link meanwhile.
+            self.path_of(source)
             target.parent.mkdir(parents=True, exist_ok=True)
+            self.path_of(source)
             os.link(temp, target)  # atomic, and fails if the target exists (unlike a rename on Linux)
         finally:
             temp.unlink(missing_ok=True)
@@ -169,6 +208,14 @@ class DocumentStorage:
             return False
         return True
 
+    def _temp_dir(self) -> Path:
+        """The hidden folder uploads are written to first; refused if it is a link (it would send them elsewhere)."""
+        temp_dir = self.documents_dir / TEMP_FOLDER
+        temp_dir.mkdir(exist_ok=True)
+        if _is_link(temp_dir) or not temp_dir.is_dir():
+            raise UnsafePath(f"{temp_dir} is not a plain folder")
+        return temp_dir
+
     def _copy(self, stream: BinaryIO, temp: Path) -> tuple[int, str]:
         size, digest = 0, hashlib.sha256()
         with temp.open("xb") as out:
@@ -181,6 +228,18 @@ class DocumentStorage:
             out.flush()
             os.fsync(out.fileno())
         return size, digest.hexdigest()
+
+
+def _is_link(path: Path) -> bool:
+    """A symlink or a Windows directory junction (Path.is_junction exists from Python 3.12)."""
+    return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+
+
+def _safe_part(part: str) -> bool:
+    """One folder or file name of a stored path. Leading spaces are allowed (they are real names on Windows);
+    a trailing dot or space isn't (Windows drops it, so two names would mean one file), nor a device name."""
+    return (part not in ("", ".", "..") and not part.startswith(".") and not part.endswith((".", " "))
+            and not _RESERVED.fullmatch(part.strip()))
 
 
 def _existing_name(parent: Path, name: str) -> str:

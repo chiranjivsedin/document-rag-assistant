@@ -1,8 +1,8 @@
 """Live check: the HTTP API against the local Docker pgvector database and Ollama.
 
 Covers GET /health, ingestion through POST /documents/ingest (polled to completion) and POST /chat
-answering from the document it just indexed. Uses its own temporary documents folder and table, so
-your documents/ and `chunks` table are not touched.
+answering from the document it just indexed. Uses its own temporary documents folder and tables (chunks and
+the document library's documents), so your documents/, `chunks` and `documents` tables are not touched.
 
 Needs `docker compose up -d` and Ollama running with both models. Run with: pytest -m integration
 """
@@ -14,13 +14,15 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-from rag.api.app import create_app
+from rag.api import app as api_app
 from rag.config import get_settings
+from rag.dms.library import build_library
 
 pytestmark = pytest.mark.integration
 
 LOCAL_DB = "postgresql://rag:rag_local_dev@127.0.0.1:5433/rag"
 TABLE = "it_api_chunks"
+DOCUMENTS_TABLE = "it_api_documents"
 DOCS = {
     "acme-dms/1.0/deprecated-features/deprecated.md":
         "Acme DMS 1.0 deprecated features: the Classic Desktop client is deprecated and will be removed in 2.0.",
@@ -30,7 +32,7 @@ DOCS = {
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
+def client(tmp_path_factory, monkeypatch_module):
     db_url = os.environ.get("DATABASE_URL", LOCAL_DB)
     documents = tmp_path_factory.mktemp("documents")
     for relative, text in DOCS.items():
@@ -40,11 +42,20 @@ def client(tmp_path_factory):
     def drop():
         with psycopg.connect(db_url, autocommit=True) as conn:
             conn.execute(f"DROP TABLE IF EXISTS {TABLE}")
+            conn.execute(f"DROP TABLE IF EXISTS {DOCUMENTS_TABLE}")
 
     drop()
+    # Ingestion through the API also keeps the document library's statuses: keep those in a table of our own.
+    monkeypatch_module.setattr(api_app, "build_library", lambda settings: build_library(settings, table=DOCUMENTS_TABLE))
     settings = get_settings({"DATABASE_URL": db_url, "VECTOR_TABLE": TABLE, "DOCUMENTS_DIR": str(documents)})
-    yield TestClient(create_app(settings))
+    yield TestClient(api_app.create_app(settings))
     drop()
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    with pytest.MonkeyPatch.context() as patch:
+        yield patch
 
 
 def ingest(client, timeout=300.0):

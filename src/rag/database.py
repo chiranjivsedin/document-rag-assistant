@@ -42,6 +42,17 @@ def delete_chunks(database_url: str, table: str, source: str) -> int:
         return conn.execute(query, (source,)).rowcount
 
 
+def chunk_counts(database_url: str, table: str, sources: list[str]) -> dict[str, int]:
+    """How many chunks each of these source files has (sources without chunks are left out)."""
+    if not sources or not table_exists(database_url, table):
+        return {}
+    query = sql.SQL("SELECT source, count(*) FROM {} WHERE source = ANY(%s) GROUP BY source").format(
+        sql.Identifier(table)
+    )
+    with connect(database_url) as conn:
+        return dict(conn.execute(query, (sources,)).fetchall())
+
+
 def indexed_files(database_url: str, table: str) -> dict[str, tuple[str, str]]:
     """Each indexed source file → (file_hash, embedding_model) of its stored chunks."""
     if not table_exists(database_url, table):

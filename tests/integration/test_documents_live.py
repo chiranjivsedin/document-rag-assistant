@@ -90,7 +90,7 @@ def test_status_updates_only_touch_documents_claimed_by_the_run(repo):
     ok = repo.add(_new("ok.pdf"))
     scanned = repo.add(_new("scanned.pdf"))
 
-    claimed = repo.claim_pending()
+    claimed = repo.claim_for_indexing()
     assert {d.id for d in claimed} == {ok.id, scanned.id}
     assert {d.status for d in claimed} == {"processing"}
 
@@ -111,10 +111,42 @@ def test_status_updates_only_touch_documents_claimed_by_the_run(repo):
 
 def test_release_processing_after_an_interrupted_run(repo):
     document = repo.add(_new("a.pdf"))
-    repo.claim_pending()
+    repo.claim_for_indexing()
     assert repo.release_processing() == 1
     assert repo.get(document.id).status == "pending"
-    assert [d.id for d in repo.claim_pending()] == [document.id]
+    assert [d.id for d in repo.claim_for_indexing()] == [document.id]
+
+
+def test_failed_documents_are_claimed_again_and_their_error_cleared(repo):
+    document = repo.add(_new("a.pdf"))
+    repo.claim_for_indexing()
+    repo.mark_failed([document.id], "Ollama was down")
+
+    assert [d.id for d in repo.claim_for_indexing()] == [document.id]
+    assert (repo.get(document.id).status, repo.get(document.id).error) == ("processing", None)
+
+
+def test_adopt_as_pending_or_failed(repo):
+    pending = repo.adopt(_new("new.pdf"))
+    failed = repo.adopt(_new("scan.pdf"), error="No text could be extracted")
+    assert (pending.status, pending.chunk_count, pending.indexed_at) == ("pending", None, None)
+    assert (failed.status, failed.error, failed.origin) == ("failed", "No text could be extracted", "folder")
+    assert repo.count_pending() == 1
+
+
+def test_refresh_and_mark_missing_only_touch_indexed_documents(repo):
+    indexed = repo.adopt(_new("indexed.pdf"), chunk_count=3)
+    waiting = repo.add(_new("waiting.pdf"))
+
+    assert repo.refresh_indexed(indexed.source, "c" * 64, 999, 7) is True
+    assert repo.refresh_indexed(waiting.source, "c" * 64, 999, 7) is False
+    refreshed = repo.get(indexed.id)
+    assert (refreshed.file_hash, refreshed.size_bytes, refreshed.chunk_count) == ("c" * 64, 999, 7)
+    assert refreshed.indexed_at >= indexed.indexed_at
+
+    assert repo.mark_missing([indexed.source, waiting.source], "gone") == 1
+    assert (repo.get(indexed.id).status, repo.get(indexed.id).error) == ("failed", "gone")
+    assert repo.get(waiting.id) == waiting
 
 
 def test_delete_removes_the_row(repo):

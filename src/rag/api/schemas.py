@@ -94,6 +94,14 @@ class DocumentResponse(BaseModel):
     indexed_at: datetime | None
 
 
+class UploadedDocumentResponse(DocumentResponse):
+    ingest_job_id: str | None = Field(
+        description="The ingestion job this upload started (follow it at /documents/ingest/{job_id}). Null when a "
+                    "job was already running (it indexes this document next) or Ollama or the database is down "
+                    "(the document stays pending until indexing is started)"
+    )
+
+
 class DocumentListResponse(BaseModel):
     documents: list[DocumentResponse]  # most recently added first
 

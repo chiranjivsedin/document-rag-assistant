@@ -1,6 +1,11 @@
 import asyncio
+import gc
 import io
 import json
+import os
+import tempfile
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -14,6 +19,7 @@ from rag.api.jobs import IngestJob, IngestJobs
 from rag.config import get_settings
 from rag.dms.library import DocumentLibrary
 from rag.dms.storage import DocumentStorage
+from rag.service import Services
 
 FORM = {"product": "documentum", "version": "16.2", "doc_type": "release-notes"}
 
@@ -31,9 +37,27 @@ def settings_for(documents_dir, **env):
                          "DOCUMENTS_DIR": str(documents_dir), "MAX_UPLOAD_MB": "1", **env})
 
 
+class FakeChecks:
+    """Stands in for rag.health.check_services. Services are reported down unless a test brings them up, so
+    an upload only starts indexing in the tests about that."""
+
+    def __init__(self):
+        self.problems = ["Can't reach Ollama (test)."]
+
+    def __call__(self, settings, need_chat_model):
+        return list(self.problems)
+
+
+@pytest.fixture(autouse=True)
+def checks(monkeypatch):
+    fake = FakeChecks()
+    monkeypatch.setattr(api, "check_services", fake)
+    return fake
+
+
 @pytest.fixture
-def library(tmp_path, fake_repository, fake_chunks):
-    return DocumentLibrary(DocumentStorage(tmp_path, max_bytes=1024 * 1024), fake_repository, fake_chunks)
+def library(tmp_path, fake_repository, fake_index):
+    return DocumentLibrary(DocumentStorage(tmp_path, max_bytes=1024 * 1024), fake_repository, fake_index.access())
 
 
 @pytest.fixture
@@ -212,7 +236,7 @@ def test_list_and_get(client):
     listing = client.get("/documents")
     assert listing.status_code == 200
     assert [d["id"] for d in listing.json()["documents"]] == [second["id"], first["id"]]
-    assert client.get(f"/documents/{first['id']}").json() == first
+    assert client.get(f"/documents/{first['id']}").json() == {k: v for k, v in first.items() if k != "ingest_job_id"}
 
 
 def test_unknown_and_malformed_ids(client):
@@ -277,12 +301,12 @@ def test_missing_original_file_is_404(client, tmp_path):
 
 # Deleting
 
-def test_delete_removes_everything(client, fake_chunks, tmp_path):
+def test_delete_removes_everything(client, fake_index, tmp_path):
     document = post(client).json()
     response = client.delete(f"/documents/{document['id']}")
     assert response.status_code == 204
     assert not (tmp_path / document["source"]).exists()
-    assert fake_chunks.deleted == [document["source"]]
+    assert fake_index.deleted == [document["source"]]
     assert client.get(f"/documents/{document['id']}").status_code == 404
     assert client.delete(f"/documents/{document['id']}").status_code == 404
 
@@ -312,9 +336,9 @@ def test_delete_with_a_locked_file_reports_nothing_deleted(client, library, monk
     assert (tmp_path / document["source"]).exists()
 
 
-def test_delete_stopped_by_a_database_outage_says_what_was_done_and_can_be_retried(client, fake_chunks, tmp_path):
+def test_delete_stopped_by_a_database_outage_says_what_was_done_and_can_be_retried(client, fake_index, tmp_path):
     document = post(client).json()
-    fake_chunks.error = psycopg.OperationalError("down")
+    fake_index.error = psycopg.OperationalError("down")
 
     response = client.delete(f"/documents/{document['id']}")
     assert response.status_code == 503
@@ -323,7 +347,7 @@ def test_delete_stopped_by_a_database_outage_says_what_was_done_and_can_be_retri
     assert "Delete the document again to finish" in body["detail"]
     assert client.get(f"/documents/{document['id']}").status_code == 200  # still listed
 
-    fake_chunks.error = None
+    fake_index.error = None
     assert client.delete(f"/documents/{document['id']}").status_code == 204
 
 
@@ -378,3 +402,222 @@ def test_cors_preflight_allows_delete(client):
         "Origin": "http://localhost:5173", "Access-Control-Request-Method": "DELETE"})
     assert response.status_code == 200
     assert "DELETE" in response.headers["access-control-allow-methods"]
+
+
+# Indexing after upload (the existing ingestion job runner, with document statuses kept in step)
+
+@pytest.fixture
+def indexing(tmp_path, library, fake_pipeline, checks, monkeypatch):
+    """A client whose uploads start indexing: services up, and the ingestion run is the fake pipeline."""
+    checks.problems = []
+    monkeypatch.setattr(api, "run_ingest", fake_pipeline)
+    settings = settings_for(tmp_path)
+    services = Services(settings=settings, store=None, chat_model=None)
+    return TestClient(api.create_app(settings, services=services, library=library), raise_server_exceptions=False)
+
+
+def wait_for(condition, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def status(client, document_id):
+    return client.get(f"/documents/{document_id}").json()["status"]
+
+
+def test_upload_starts_indexing_and_the_document_becomes_indexed(indexing, fake_pipeline):
+    body = post(indexing).json()
+    assert body["ingest_job_id"]
+
+    wait_for(lambda: indexing.get(f"/documents/ingest/{body['ingest_job_id']}").json()["status"] != "running")
+    job = indexing.get(f"/documents/ingest/{body['ingest_job_id']}").json()
+    assert job["status"] == "succeeded" and job["report"]["added"] == [body["source"]]
+    document = indexing.get(f"/documents/{body['id']}").json()
+    assert (document["status"], document["chunk_count"], document["error"]) == ("indexed", 2, None)
+    assert fake_pipeline.calls == 1
+
+
+def test_upload_while_services_are_down_stays_pending(client, fake_pipeline):
+    body = post(client).json()  # the default client reports Ollama down
+    assert body["ingest_job_id"] is None and body["status"] == "pending"
+    assert fake_pipeline.calls == 0
+    assert status(client, body["id"]) == "pending"
+
+
+def test_upload_during_a_running_job_is_indexed_by_a_follow_up_job(indexing, fake_pipeline):
+    fake_pipeline.gate = threading.Event()
+    first = post(indexing, filename="first.md").json()
+    wait_for(lambda: fake_pipeline.running == 1)
+
+    second = post(indexing, filename="second.md").json()
+    assert second["ingest_job_id"] is None  # a job is running: no second job, and no error
+    assert status(indexing, second["id"]) == "pending"
+
+    fake_pipeline.gate.set()
+    wait_for(lambda: status(indexing, second["id"]) == "indexed")
+    assert status(indexing, first["id"]) == "indexed"
+    assert fake_pipeline.calls == 2 and fake_pipeline.max_running == 1
+
+
+def test_a_failed_job_marks_its_documents_failed_with_the_reason(indexing, fake_pipeline):
+    fake_pipeline.error = psycopg.OperationalError("password secret rejected")
+    body = post(indexing).json()
+
+    wait_for(lambda: status(indexing, body["id"]) != "pending" and status(indexing, body["id"]) != "processing")
+    document = indexing.get(f"/documents/{body['id']}").json()
+    assert document["status"] == "failed"
+    assert document["error"] == "Ollama or the database stopped responding. Check GET /health."
+    assert "secret" not in indexing.get("/documents").text
+    assert indexing.get(f"/documents/ingest/{body['ingest_job_id']}").json()["status"] == "failed"
+
+
+def test_the_ingest_endpoint_updates_statuses_and_adopts_files(indexing, checks, tmp_path, fake_pipeline):
+    checks.problems = ["Can't reach Ollama (test)."]  # uploads don't start a job: the endpoint does
+    waiting = post(indexing).json()
+    by_hand = tmp_path / "acme" / "2.0" / "notes" / "by-hand.md"
+    by_hand.parent.mkdir(parents=True)
+    by_hand.write_text("Put here by hand", encoding="utf-8")
+    checks.problems = []
+
+    response = indexing.post("/documents/ingest")
+    assert response.status_code == 202
+    assert set(response.json()) == {"job_id", "status", "started_at", "finished_at", "report", "error"}  # unchanged
+    wait_for(lambda: indexing.get(f"/documents/ingest/{response.json()['job_id']}").json()["status"] != "running")
+
+    documents = {d["source"]: d for d in indexing.get("/documents").json()["documents"]}
+    assert documents[waiting["source"]]["status"] == "indexed"
+    adopted = documents["acme/2.0/notes/by-hand.md"]
+    assert (adopted["origin"], adopted["status"], adopted["chunk_count"]) == ("folder", "indexed", 2)
+
+
+def test_concurrent_uploads_never_run_two_ingestions_at_once(indexing, fake_pipeline):
+    fake_pipeline.gate = threading.Event()
+    bodies, errors = [], []
+
+    def upload(number):
+        try:
+            bodies.append(post(indexing, filename=f"doc-{number}.md", data=f"document {number}".encode()).json())
+        except Exception as error:  # pragma: no cover - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=upload, args=(n,)) for n in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == [] and len(bodies) == 6
+    assert sum(b["ingest_job_id"] is not None for b in bodies) == 1  # exactly one upload started a job
+
+    fake_pipeline.gate.set()
+    wait_for(lambda: all(status(indexing, b["id"]) == "indexed" for b in bodies))
+    assert fake_pipeline.max_running == 1
+    assert fake_pipeline.calls <= 2  # the first job, plus at most one follow-up for uploads made meanwhile
+
+
+# Unsafe paths become a clear 500 (R5)
+
+UNSAFE = ("The document's file can't be used safely on this server (its path or a link on the way isn't allowed); "
+          "see the server log.")
+
+
+def junction(link, target):
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    except (ImportError, OSError):
+        pytest.skip("can't create a junction here (not Windows)")
+
+
+def test_upload_into_a_linked_folder_is_a_clear_500(client, tmp_path, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside")
+    junction(tmp_path / "documentum", outside)
+    response = post(client)
+    assert response.status_code == 500 and response.json() == {"detail": UNSAFE}
+    assert list(outside.rglob("*")) == []
+
+
+def test_a_hard_linked_original_is_not_served(client, tmp_path, tmp_path_factory):
+    document = post(client).json()
+    outside = tmp_path_factory.mktemp("outside")
+    stored = tmp_path / document["source"]
+    stored.unlink()
+    (outside / "secret.md").write_text("secret")
+    os.link(outside / "secret.md", stored)  # same name, now another name for a file outside
+
+    response = client.get(f"/documents/{document['id']}/file")
+    assert response.status_code == 500 and response.json() == {"detail": UNSAFE}
+    assert "secret" not in response.text
+
+
+def test_deleting_through_a_link_deletes_nothing(client, tmp_path, tmp_path_factory, fake_index):
+    document = post(client).json()
+    outside = tmp_path_factory.mktemp("outside")
+    folder = tmp_path / "documentum" / "16.2" / "release-notes"
+    (outside / "notes.md").write_bytes((folder / "notes.md").read_bytes())
+    (folder / "notes.md").unlink()
+    folder.rmdir()
+    junction(folder, outside)  # the document's folder now leads outside
+
+    response = client.delete(f"/documents/{document['id']}")
+    assert response.status_code == 500
+    assert response.json() == {"detail": f"Nothing was deleted. {UNSAFE}",
+                               "file_deleted": False, "chunks_deleted": False, "record_deleted": False}
+    assert (outside / "notes.md").exists() and fake_index.deleted == []
+
+
+# Chunked uploads leave no temporary files behind
+
+@pytest.fixture
+def spool_dir(tmp_path_factory, monkeypatch):
+    """Where the form parser spools uploads over 1 MB (Python's temp folder), redirected to an empty folder."""
+    folder = tmp_path_factory.mktemp("spool")
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    return folder
+
+
+@pytest.mark.parametrize("size, expected", [
+    (5 * 1024 * 1024, 413),        # past the body cap: reading stops
+    (1024 * 1024 + 10, 413),       # body under the cap, file just over the limit: refused when saving
+    (900 * 1024, 201),
+])
+def test_chunked_uploads_leave_no_temporary_files(client, tmp_path, spool_dir, size, expected):
+    body, content_type = multipart_body(b"x" * size, filename="big.txt")
+    response = client.post("/documents", content=chunked(body), headers={"Content-Type": content_type})
+
+    assert response.status_code == expected
+    gc.collect()
+    assert list(spool_dir.iterdir()) == []  # the parser's spooled copy is gone
+    assert not (tmp_path / ".uploads").exists() or list((tmp_path / ".uploads").iterdir()) == []
+    stored = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert len(stored) == (1 if expected == 201 else 0)
+
+
+# Startup recovery never touches a running job
+
+def test_requests_during_a_running_job_never_release_its_claims(tmp_path, library, fake_repository, fake_pipeline,
+                                                                checks, monkeypatch):
+    checks.problems = []
+    monkeypatch.setattr(api, "run_ingest", fake_pipeline)
+    builds, releases = [], []
+    monkeypatch.setattr(api, "build_library", lambda settings: builds.append(1) or library)
+    real_release = fake_repository.release_processing
+    monkeypatch.setattr(fake_repository, "release_processing", lambda: releases.append(1) or real_release())
+    settings = settings_for(tmp_path)
+    client = TestClient(api.create_app(settings, services=Services(settings=settings, store=None, chat_model=None)),
+                        raise_server_exceptions=False)
+    fake_pipeline.gate = threading.Event()
+
+    first = post(client, filename="first.md").json()
+    wait_for(lambda: fake_pipeline.running == 1)
+    assert status(client, first["id"]) == "processing"
+    client.get("/documents")
+    post(client, filename="second.md")
+    assert client.post("/documents/ingest").status_code == 409
+
+    assert status(client, first["id"]) == "processing"  # still claimed by the running job
+    assert len(builds) == 1 and len(releases) == 1  # one build; one release, at the start of that job's run
+
+    fake_pipeline.gate.set()
+    wait_for(lambda: {d["status"] for d in client.get("/documents").json()["documents"]} == {"indexed"})

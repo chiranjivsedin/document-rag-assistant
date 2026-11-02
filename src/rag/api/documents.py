@@ -1,7 +1,8 @@
 """The document library's endpoints: upload, list, read, open and delete original files.
 
-Indexing is separate: an upload is recorded as pending and is indexed by an ingestion run. Like the rest of
-the API, the endpoints are plain `def` functions, and they never take a file system path from the request.
+An upload is recorded as pending and then indexed by an ingestion job: the upload starts one when none is
+running, and a running job starts another for documents uploaded meanwhile. Like the rest of the API, the
+endpoints are plain `def` functions, and they never take a file system path from the request.
 """
 
 import dataclasses
@@ -17,13 +18,14 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rag.api.errors import backend_failure
-from rag.api.jobs import IngestJobs
+from rag.api.jobs import IngestJob, IngestJobs
 from rag.api.schemas import (
     DeletionFailedResponse,
     DocumentListResponse,
     DocumentResponse,
     ErrorResponse,
     IngestConflictResponse,
+    UploadedDocumentResponse,
 )
 from rag.config import Settings
 from rag.dms.library import (
@@ -35,7 +37,7 @@ from rag.dms.library import (
     StorageFailed,
 )
 from rag.dms.repository import DocumentRecord
-from rag.dms.storage import DocumentTooLarge, InvalidDocument
+from rag.dms.storage import DocumentTooLarge, InvalidDocument, UnsafePath
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +45,13 @@ T = TypeVar("T")
 MB = 1024 * 1024
 MULTIPART_OVERHEAD = 64 * 1024  # form fields and boundaries around the file itself
 UNKNOWN_DOCUMENT = "Unknown document."
+UNSAFE_FILE = ("The document's file can't be used safely on this server (its path or a link on the way isn't "
+               "allowed); see the server log.")
 
 
-def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrary], jobs: IngestJobs) -> APIRouter:
+def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrary], jobs: IngestJobs,
+                    start_indexing: Callable[[], IngestJob | None]) -> APIRouter:
+    """`start_indexing()` starts an ingestion job if none is running and the services are up."""
     router = APIRouter(prefix="/documents", tags=["documents"])
 
     def library() -> DocumentLibrary:
@@ -58,7 +64,7 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
     @router.post(
         "",
         status_code=201,
-        response_model=DocumentResponse,
+        response_model=UploadedDocumentResponse,
         responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 413: {"model": ErrorResponse},
                    500: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     )
@@ -68,10 +74,11 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
         product: Annotated[str, Form()],
         version: Annotated[str, Form()],
         doc_type: Annotated[str, Form()],
-    ) -> DocumentResponse:
-        """Store a file in the documents folder under product/version/doc_type, and list it as pending.
+    ) -> UploadedDocumentResponse:
+        """Store a file in the documents folder under product/version/doc_type, list it as pending, and start
+        indexing it.
 
-        It is indexed by the next ingestion run. A file already stored at the same path is never replaced.
+        A file already stored at the same path is never replaced.
         """
         docs = library()
         try:
@@ -84,9 +91,12 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
             raise HTTPException(status_code=409, detail=str(error)) from None
         except StorageFailed as error:
             raise HTTPException(status_code=500, detail=str(error)) from None
+        except UnsafePath as error:
+            raise _unsafe(error) from None
         logger.info("Uploaded document %s (%s)", document.id, document.source)
+        job = start_indexing()
         response.headers["Location"] = f"/documents/{document.id}"
-        return _body(document)
+        return UploadedDocumentResponse(**dataclasses.asdict(document), ingest_job_id=job.id if job else None)
 
     @router.get("", response_model=DocumentListResponse, responses={503: {"model": ErrorResponse}})
     def list_documents() -> DocumentListResponse:
@@ -111,6 +121,8 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
             raise HTTPException(status_code=404, detail=UNKNOWN_DOCUMENT) from None
         except FileMissing:
             raise HTTPException(status_code=404, detail="The original file is missing on the server.") from None
+        except UnsafePath as error:
+            raise _unsafe(error) from None
         # Text is always sent as plain text, never HTML, so an uploaded file can't run script in the app.
         is_pdf = document.content_type == "application/pdf"
         media_type = document.content_type if is_pdf else "text/plain; charset=utf-8"
@@ -214,9 +226,16 @@ def _backend(action: Callable[..., T], *args) -> T:
         raise HTTPException(status_code=failure[0], detail=failure[1]) from None
 
 
+def _unsafe(error: UnsafePath) -> HTTPException:
+    logger.error("Refused an unsafe document path: %s", error)
+    return HTTPException(status_code=500, detail=UNSAFE_FILE)
+
+
 def _deletion_failed(failed: DeletionFailed) -> JSONResponse:
     steps = failed.steps
-    if not steps.file_deleted:
+    if not steps.file_deleted and isinstance(failed.__cause__, UnsafePath):
+        status, detail = 500, f"Nothing was deleted. {UNSAFE_FILE}"
+    elif not steps.file_deleted:
         status, detail = 500, ("Nothing was deleted: the original file couldn't be removed (it may be open in "
                                "another program). Try again later.")
     else:

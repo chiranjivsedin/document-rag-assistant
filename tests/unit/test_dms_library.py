@@ -21,8 +21,8 @@ SOURCE = "documentum/16.2/release-notes/notes.md"
 
 
 @pytest.fixture
-def library(tmp_path, fake_repository, fake_chunks):
-    return DocumentLibrary(DocumentStorage(tmp_path, max_bytes=MB), fake_repository, fake_chunks)
+def library(tmp_path, fake_repository, fake_index):
+    return DocumentLibrary(DocumentStorage(tmp_path, max_bytes=MB), fake_repository, fake_index.access())
 
 
 def upload(library, data=b"# Webtop is deprecated", filename="notes.md",
@@ -157,19 +157,19 @@ def test_original_file_missing_on_disk(library):
 
 # Deleting
 
-def test_delete_removes_file_then_chunks_then_record(library, fake_repository, fake_chunks):
+def test_delete_removes_file_then_chunks_then_record(library, fake_repository, fake_index):
     document = upload(library)
     assert library.delete(document.id) == document
     assert files_in(library) == []
-    assert fake_chunks.deleted == [document.source]
+    assert fake_index.deleted == [document.source]
     assert fake_repository.rows == {}
 
 
-def test_delete_when_the_file_is_already_gone(library, fake_repository, fake_chunks):
+def test_delete_when_the_file_is_already_gone(library, fake_repository, fake_index):
     document = upload(library)
     library.storage.delete(document.source)
     library.delete(document.id)
-    assert fake_chunks.deleted == [document.source] and fake_repository.rows == {}
+    assert fake_index.deleted == [document.source] and fake_repository.rows == {}
 
 
 def test_delete_unknown_document(library):
@@ -177,7 +177,7 @@ def test_delete_unknown_document(library):
         library.delete(uuid.uuid4())
 
 
-def test_a_locked_file_stops_the_deletion_before_anything_changes(library, fake_repository, fake_chunks,
+def test_a_locked_file_stops_the_deletion_before_anything_changes(library, fake_repository, fake_index,
                                                                   monkeypatch):
     document = upload(library)
     monkeypatch.setattr(library.storage, "delete", lambda source: (_ for _ in ()).throw(PermissionError("in use")))
@@ -188,24 +188,24 @@ def test_a_locked_file_stops_the_deletion_before_anything_changes(library, fake_
     assert raised.value.steps == DeletionSteps()
     assert isinstance(raised.value.__cause__, PermissionError)
     assert files_in(library) == [document.source]
-    assert fake_chunks.deleted == [] and document.id in fake_repository.rows
+    assert fake_index.deleted == [] and document.id in fake_repository.rows
 
 
-def test_failed_chunk_removal_keeps_the_record_and_a_retry_finishes(library, fake_repository, fake_chunks):
+def test_failed_chunk_removal_keeps_the_record_and_a_retry_finishes(library, fake_repository, fake_index):
     document = upload(library)
-    fake_chunks.error = psycopg.OperationalError("database down")
+    fake_index.error = psycopg.OperationalError("database down")
 
     with pytest.raises(DeletionFailed) as raised:
         library.delete(document.id)
     assert raised.value.steps == DeletionSteps(file_deleted=True)
     assert files_in(library) == [] and document.id in fake_repository.rows  # still listed, so it can be retried
 
-    fake_chunks.error = None
+    fake_index.error = None
     library.delete(document.id)
-    assert fake_chunks.deleted == [document.source] and fake_repository.rows == {}
+    assert fake_index.deleted == [document.source] and fake_repository.rows == {}
 
 
-def test_failed_record_removal_and_a_retry_finishes(library, fake_repository, fake_chunks):
+def test_failed_record_removal_and_a_retry_finishes(library, fake_repository, fake_index):
     document = upload(library)
     fake_repository.fail_on["delete"] = psycopg.OperationalError("database down")
 
@@ -216,4 +216,4 @@ def test_failed_record_removal_and_a_retry_finishes(library, fake_repository, fa
     del fake_repository.fail_on["delete"]
     library.delete(document.id)
     assert fake_repository.rows == {}
-    assert fake_chunks.deleted == [document.source, document.source]  # repeating a step is harmless
+    assert fake_index.deleted == [document.source, document.source]  # repeating a step is harmless

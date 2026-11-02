@@ -55,6 +55,16 @@ class FakeStore:
         return self.results[:k]
 
 
+@pytest.fixture(autouse=True)
+def no_document_library(monkeypatch):
+    """These tests cover the API without the document library (test_documents_api covers it). Ingestion then
+    runs exactly as it did before the library existed, without updating document statuses."""
+    def unavailable(settings):
+        raise RuntimeError("no document library in these tests")
+
+    monkeypatch.setattr(api, "build_library", unavailable)
+
+
 @pytest.fixture
 def checks(monkeypatch):
     fake = FakeChecks()

@@ -154,7 +154,7 @@ def test_add_inserts_an_upload_as_pending(fake_db):
     query, params = fake_db.statements[0]
     assert query.startswith('INSERT INTO "docs"')
     assert "ON CONFLICT (source) DO NOTHING" in query
-    assert params[-3:] == ("upload", "pending", None)
+    assert params[-4:] == ("upload", "pending", None, None)  # origin, status, chunk_count, error
 
 
 def test_add_reports_a_duplicate_source(fake_db):
@@ -173,7 +173,7 @@ def test_adopt_records_the_file_where_it_is_as_indexed(fake_db):
     query, params = fake_db.statements[0]
     assert "now())" in query  # indexed_at is set
     assert params[0] == "documentum/16.2/release-notes/notes.pdf"  # the existing path, not a copy
-    assert params[-3:] == ("folder", "indexed", 7)
+    assert params[-4:] == ("folder", "indexed", 7, None)
 
 
 def test_adopt_returns_none_when_already_tracked(fake_db):
@@ -181,10 +181,45 @@ def test_adopt_returns_none_when_already_tracked(fake_db):
     assert DocumentRepository("postgresql://u:p@h/db").adopt(_new(), chunk_count=7) is None
 
 
-def test_claim_takes_only_pending_documents(fake_db):
-    DocumentRepository("postgresql://u:p@h/db").claim_pending()
+def test_adopt_a_file_not_indexed_yet_as_pending(fake_db):
+    fake_db.rows = [_row(origin="folder")]
+    DocumentRepository("postgresql://u:p@h/db").adopt(_new())
+    query, params = fake_db.statements[0]
+    assert "NULL)" in query  # no indexed_at
+    assert params[-4:] == ("folder", "pending", None, None)
+
+
+def test_adopt_a_file_without_text_as_failed(fake_db):
+    fake_db.rows = [_row(origin="folder", status="failed", error="No text")]
+    DocumentRepository("postgresql://u:p@h/db").adopt(_new(), error="No text")
+    _, params = fake_db.statements[0]
+    assert params[-4:] == ("folder", "failed", None, "No text")
+
+
+def test_claim_takes_pending_and_failed_documents_and_clears_the_error(fake_db):
+    DocumentRepository("postgresql://u:p@h/db").claim_for_indexing()
     query, _ = fake_db.statements[0]
-    assert "SET status = 'processing' WHERE status = 'pending'" in query
+    assert "SET status = 'processing', error = NULL WHERE status IN ('pending', 'failed')" in query
+
+
+def test_refresh_only_touches_an_indexed_document(fake_db):
+    fake_db.rowcount = 1
+    assert DocumentRepository("postgresql://u:p@h/db").refresh_indexed("a/b.md", HASH, 10, 4) is True
+    query, params = fake_db.statements[0]
+    assert "WHERE source = %s AND status = 'indexed'" in query
+    assert params == (HASH, 10, 4, "a/b.md")
+
+
+def test_mark_missing_only_touches_indexed_documents(fake_db):
+    fake_db.rowcount = 1
+    assert DocumentRepository("postgresql://u:p@h/db").mark_missing(["a/b.md"], "gone") == 1
+    query, params = fake_db.statements[0]
+    assert "WHERE source = ANY(%s) AND status = 'indexed'" in query
+    assert params == ("gone", ["a/b.md"])
+
+
+def test_mark_missing_with_no_sources_does_nothing(no_db):
+    assert DocumentRepository("postgresql://u:p@h/db").mark_missing([], "gone") == 0
 
 
 def test_mark_indexed_only_finishes_a_claimed_document(fake_db):

@@ -5,15 +5,15 @@ Run with: pytest -m integration
 """
 
 import os
-from functools import partial
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
 from rag import database
-from rag.api.app import create_app
+from rag.api import app as api_app
 from rag.config import get_settings
+from rag.dms.index import index_access
 from rag.dms.library import DocumentLibrary
 from rag.dms.repository import DocumentRepository
 from rag.dms.storage import DocumentStorage
@@ -41,15 +41,15 @@ def db_url():
 
 
 @pytest.fixture
-def client(db_url, tmp_path):
+def client(db_url, tmp_path, monkeypatch):
+    # These tests cover storage and the endpoints; uploads mustn't start real indexing here (that is
+    # test_documents_tracking_live's job), so the services are reported down.
+    monkeypatch.setattr(api_app, "check_services", lambda settings, need_chat_model: ["not in this test"])
+    settings = get_settings({"DATABASE_URL": db_url, "DOCUMENTS_DIR": str(tmp_path), "VECTOR_TABLE": CHUNKS_TABLE})
     repository = DocumentRepository(db_url, table=DOCUMENTS_TABLE)
     repository.create_table()
-    library = DocumentLibrary(
-        DocumentStorage(tmp_path, max_bytes=1024 * 1024), repository,
-        partial(database.delete_chunks, db_url, CHUNKS_TABLE),
-    )
-    settings = get_settings({"DATABASE_URL": db_url, "DOCUMENTS_DIR": str(tmp_path), "VECTOR_TABLE": CHUNKS_TABLE})
-    return TestClient(create_app(settings, library=library), raise_server_exceptions=False)
+    library = DocumentLibrary(DocumentStorage(tmp_path, max_bytes=1024 * 1024), repository, index_access(settings))
+    return TestClient(api_app.create_app(settings, library=library), raise_server_exceptions=False)
 
 
 def chunk_sources(db_url):
@@ -74,6 +74,7 @@ def test_upload_list_open_and_delete(client, db_url, tmp_path):
 
     listing = client.get("/documents").json()["documents"]
     assert [d["id"] for d in listing] == [other["id"], document["id"]]
+    assert document.pop("ingest_job_id") is None  # services reported down in this test: not indexed
     assert client.get(f"/documents/{document['id']}").json() == document
 
     opened = client.get(f"/documents/{document['id']}/file")

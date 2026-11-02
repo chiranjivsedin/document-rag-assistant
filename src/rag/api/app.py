@@ -35,6 +35,7 @@ from rag.config import Settings, get_settings
 from rag.dms.library import DocumentLibrary, build_library
 from rag.generation.prompts import NO_ANSWER
 from rag.health import check_services
+from rag.ingestion.pipeline import IngestReport
 from rag.service import Services, ask, build_services, run_ingest
 
 logger = logging.getLogger(__name__)
@@ -146,30 +147,74 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             raise HTTPException(status_code=503, detail=" ".join(problems))
 
         try:
-            job = jobs.start()
+            job = start_job(documents_dir)
         except JobAlreadyRunning as running:
             return JSONResponse(
                 status_code=409,
                 content={"detail": "An ingestion job is already running.", "job_id": running.job.id},
             )
+        response.headers["Location"] = f"/documents/ingest/{job.id}"
+        return _job_body(job)
+
+    def start_job(documents_dir: Path) -> IngestJob:
+        """Register a job and run it in a background thread; raises JobAlreadyRunning if one is running."""
+        job = jobs.start()
         try:
             threading.Thread(target=run_job, args=(job.id, documents_dir), name=f"ingest-{job.id[:8]}",
                              daemon=True).start()
         except Exception:
             jobs.fail(job.id, INGEST_FAILED)
             raise
-        response.headers["Location"] = f"/documents/ingest/{job.id}"
-        return _job_body(job)
+        return job
+
+    def start_indexing_if_idle() -> IngestJob | None:
+        """Start an ingestion job if none is running and the services are up; otherwise do nothing (the
+        waiting documents stay pending). Never raises: it runs after an upload has already succeeded."""
+        documents_dir = Path(settings.documents_dir)
+        try:
+            if not documents_dir.is_dir() or check_services(settings, need_chat_model=False):
+                return None
+            return start_job(documents_dir)
+        except JobAlreadyRunning:
+            return None  # that job starts another one for documents still pending when it ends
+        except Exception as error:
+            logger.error("Couldn't start indexing", exc_info=error)
+            return None
 
     def run_job(job_id: str, documents_dir: Path) -> None:
         try:
-            report = run_ingest(get_services(), documents_dir)
+            report = tracked_ingest(documents_dir)
         except Exception as error:
             logger.error("Ingestion job %s failed", job_id, exc_info=error)
-            failure = backend_failure(error)
-            jobs.fail(job_id, failure[1] if failure else INGEST_FAILED)
+            jobs.fail(job_id, failure_message(error))
         else:
             jobs.succeed(job_id, report)
+            # Documents uploaded while this job ran are still pending: index them too. The job is finished
+            # first, so an upload either starts its own job or is seen here, never neither.
+            if documents_waiting():
+                start_indexing_if_idle()
+
+    def tracked_ingest(documents_dir: Path) -> IngestReport:
+        """The existing ingestion run, with the document library's statuses kept in step when it's available."""
+        def ingest() -> IngestReport:
+            return run_ingest(get_services(), documents_dir)
+
+        library = None
+        if settings.database_url:
+            try:
+                library = get_library()
+            except Exception as error:
+                logger.warning("Ingesting without updating document statuses: the document library is "
+                               "unavailable", exc_info=error)
+        return library.tracker.run(ingest, failure_message) if library else ingest()
+
+    def documents_waiting() -> bool:
+        library = built["library"]
+        try:
+            return library is not None and library.repository.count_pending() > 0
+        except Exception as error:
+            logger.warning("Couldn't check for documents waiting to be indexed", exc_info=error)
+            return False
 
     @app.get(
         "/documents/ingest/{job_id}",
@@ -186,8 +231,14 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             )
         return _job_body(job)
 
-    app.include_router(document_routes(settings, get_library, jobs))
+    app.include_router(document_routes(settings, get_library, jobs, start_indexing_if_idle))
     return app
+
+
+def failure_message(error: Exception) -> str:
+    """A client-safe reason for a failed ingestion run."""
+    failure = backend_failure(error)
+    return failure[1] if failure else INGEST_FAILED
 
 
 def _source(number: int, doc: Document) -> ChatSource:
