@@ -60,6 +60,11 @@ class IngestJobs:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def running(self) -> IngestJob | None:
+        """The job that is running now, if any."""
+        with self._lock:
+            return self._jobs[self._running] if self._running is not None else None
+
     def _finish(self, job_id: str, **changes) -> None:
         with self._lock:
             self._jobs[job_id] = replace(self._jobs[job_id], finished_at=_now(), **changes)

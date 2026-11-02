@@ -103,6 +103,7 @@ def test_health_reports_problems_with_503(client, checks):
 def test_exposed_endpoints(client):
     assert set(client.get("/openapi.json").json()["paths"]) == {
         "/health", "/chat", "/documents/ingest", "/documents/ingest/{job_id}",
+        "/documents", "/documents/{document_id}", "/documents/{document_id}/file",
     }
     assert client.get("/docs").status_code == 200
 

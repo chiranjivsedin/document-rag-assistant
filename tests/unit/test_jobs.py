@@ -50,6 +50,15 @@ def test_unknown_job_is_none():
     assert IngestJobs().get("no-such-job") is None
 
 
+def test_running_names_the_current_job_only():
+    jobs = IngestJobs()
+    assert jobs.running() is None
+    job = jobs.start()
+    assert jobs.running() == job
+    jobs.succeed(job.id, IngestReport())
+    assert jobs.running() is None
+
+
 def test_get_returns_a_snapshot():
     jobs = IngestJobs()
     job = jobs.start()

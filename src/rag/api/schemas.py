@@ -1,5 +1,6 @@
 """Request and response bodies of the HTTP API; FastAPI also publishes them in its OpenAPI schema."""
 
+import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -71,3 +72,34 @@ class IngestJobResponse(BaseModel):
 class IngestConflictResponse(BaseModel):
     detail: str
     job_id: str = Field(description="The job that is already running")
+
+
+class DocumentResponse(BaseModel):
+    """One document in the library: its original file and whether it is in the index yet."""
+
+    id: uuid.UUID
+    source: str = Field(description="Path relative to the documents folder, as in a chat source")
+    filename: str = Field(description="The name to show: the uploaded file's own name")
+    product: str | None
+    version: str | None
+    doc_type: str | None
+    content_type: str
+    size_bytes: int
+    file_hash: str = Field(description="SHA-256 of the content")
+    origin: Literal["upload", "folder"] = Field(description="upload: added here; folder: found in the documents folder")
+    status: Literal["pending", "processing", "indexed", "failed"]
+    error: str | None = Field(description="Set when status is failed")
+    chunk_count: int | None
+    added_at: datetime
+    indexed_at: datetime | None
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentResponse]  # most recently added first
+
+
+class DeletionFailedResponse(BaseModel):
+    detail: str
+    file_deleted: bool = Field(description="The original file is gone (it may already have been missing)")
+    chunks_deleted: bool = Field(description="Its passages are out of the index")
+    record_deleted: bool = Field(description="It is no longer listed")

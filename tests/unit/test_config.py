@@ -11,6 +11,7 @@ def test_defaults():
     assert s.ollama_base_url == "http://127.0.0.1:11434"
     assert (s.chunk_size, s.chunk_overlap) == (1000, 150)
     assert s.documents_dir == "documents"
+    assert s.max_upload_mb == 50
     assert s.database_url is None
     assert (s.vector_store, s.vector_table) == ("pgvector", "chunks")
     assert s.api_cors_origins == ("http://localhost:5173",)
@@ -64,6 +65,16 @@ def test_keep_alive_defaults_to_30_minutes():
 def test_invalid_keep_alive(value):
     with pytest.raises(ValueError, match="OLLAMA_KEEP_ALIVE_MINUTES"):
         get_settings({"OLLAMA_KEEP_ALIVE_MINUTES": value})
+
+
+def test_max_upload_mb():
+    assert get_settings({"MAX_UPLOAD_MB": "200"}).max_upload_mb == 200
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "big"])
+def test_invalid_max_upload_mb(value):
+    with pytest.raises(ValueError, match="MAX_UPLOAD_MB"):
+        get_settings({"MAX_UPLOAD_MB": value})
 
 
 def test_unsupported_vector_store():

@@ -21,6 +21,7 @@ class Settings:
     chunk_size: int
     chunk_overlap: int
     documents_dir: str
+    max_upload_mb: int  # largest file the document library accepts
     database_url: str | None
     vector_store: str
     vector_table: str
@@ -43,6 +44,7 @@ def get_settings(env: Mapping[str, str] | None = None) -> Settings:
         chunk_size=_int(env, "CHUNK_SIZE", 1000),
         chunk_overlap=_int(env, "CHUNK_OVERLAP", 150),
         documents_dir=env.get("DOCUMENTS_DIR", "documents"),
+        max_upload_mb=_int(env, "MAX_UPLOAD_MB", 50),
         database_url=env.get("DATABASE_URL") or None,
         vector_store=env.get("VECTOR_STORE", "pgvector"),
         vector_table=env.get("VECTOR_TABLE", "chunks"),
@@ -83,3 +85,5 @@ def _validate(s: Settings) -> None:
         raise ValueError("CHUNK_SIZE must be greater than 0")
     if not 0 <= s.chunk_overlap < s.chunk_size:
         raise ValueError("CHUNK_OVERLAP must be at least 0 and smaller than CHUNK_SIZE")
+    if s.max_upload_mb <= 0:
+        raise ValueError("MAX_UPLOAD_MB must be greater than 0")

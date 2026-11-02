@@ -18,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langchain_core.documents import Document
 
+from rag.api.documents import UploadSizeLimit, document_routes
+from rag.api.errors import backend_failure
 from rag.api.jobs import IngestJob, IngestJobs, JobAlreadyRunning
 from rag.api.schemas import (
     ChatRequest,
@@ -30,32 +32,35 @@ from rag.api.schemas import (
     IngestReportBody,
 )
 from rag.config import Settings, get_settings
+from rag.dms.library import DocumentLibrary, build_library
 from rag.generation.prompts import NO_ANSWER
 from rag.health import check_services
-from rag.providers import model_errors, unavailable_errors
 from rag.service import Services, ask, build_services, run_ingest
 
 logger = logging.getLogger(__name__)
 
-UNAVAILABLE = "Ollama or the database stopped responding. Check GET /health."
 INGEST_FAILED = "Ingestion failed unexpectedly; see the server log."
 
 
-def create_app(settings: Settings | None = None, services: Services | None = None) -> FastAPI:
-    """Build the app. `services` can be passed in prebuilt (tests); otherwise they are built on first use."""
+def create_app(settings: Settings | None = None, services: Services | None = None,
+               library: DocumentLibrary | None = None) -> FastAPI:
+    """Build the app. `services` and `library` can be passed in prebuilt (tests); otherwise they are built on
+    first use."""
     settings = settings or get_settings()
     app = FastAPI(title="RAG prototype API", version="0.1.0")
     app.state.settings = settings
+    # Added before CORS, so CORS stays the outer layer and its headers reach the browser on a 413 too.
+    app.add_middleware(UploadSizeLimit, max_upload_mb=settings.max_upload_mb)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.api_cors_origins),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type"],
     )
 
     # Built on the first request that needs them, not at startup, so the API (and /health) still
     # starts while Docker or Ollama is down. A failed build isn't cached; the next request retries.
-    built = {"services": services}
+    built = {"services": services, "library": library}
     build_lock = threading.Lock()
 
     def get_services() -> Services:
@@ -63,6 +68,12 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             if built["services"] is None:
                 built["services"] = build_services(settings)
             return built["services"]
+
+    def get_library() -> DocumentLibrary:
+        with build_lock:
+            if built["library"] is None:
+                built["library"] = build_library(settings)
+            return built["library"]
 
     jobs = IngestJobs()
 
@@ -101,7 +112,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             result = ask(get_services(), request.question, k=request.k,
                          version=request.version, product=request.product)
         except Exception as error:
-            failure = _backend_failure(error)
+            failure = backend_failure(error)
             if failure is None:
                 raise
             logger.warning("Backend failure during /chat", exc_info=error)
@@ -155,7 +166,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             report = run_ingest(get_services(), documents_dir)
         except Exception as error:
             logger.error("Ingestion job %s failed", job_id, exc_info=error)
-            failure = _backend_failure(error)
+            failure = backend_failure(error)
             jobs.fail(job_id, failure[1] if failure else INGEST_FAILED)
         else:
             jobs.succeed(job_id, report)
@@ -175,17 +186,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             )
         return _job_body(job)
 
+    app.include_router(document_routes(settings, get_library, jobs))
     return app
-
-
-def _backend_failure(error: Exception) -> tuple[int, str] | None:
-    """HTTP status and client-safe message for a backend failure, or None if it isn't one."""
-    if isinstance(error, unavailable_errors()):
-        return 503, UNAVAILABLE
-    if isinstance(error, model_errors()):
-        reason = getattr(error, "error", None) or type(error).__name__  # Ollama's own reason when it gives one
-        return 502, f"The model service failed: {str(reason)[:300]}"
-    return None
 
 
 def _source(number: int, doc: Document) -> ChatSource:

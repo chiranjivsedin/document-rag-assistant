@@ -33,6 +33,15 @@ def table_exists(database_url: str, table: str) -> bool:
         return conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]
 
 
+def delete_chunks(database_url: str, table: str, source: str) -> int:
+    """Remove one source file's chunks; returns how many were removed (0 if none, or no table yet)."""
+    if not table_exists(database_url, table):
+        return 0
+    query = sql.SQL("DELETE FROM {} WHERE source = %s").format(sql.Identifier(table))
+    with connect(database_url) as conn:
+        return conn.execute(query, (source,)).rowcount
+
+
 def indexed_files(database_url: str, table: str) -> dict[str, tuple[str, str]]:
     """Each indexed source file → (file_hash, embedding_model) of its stored chunks."""
     if not table_exists(database_url, table):
