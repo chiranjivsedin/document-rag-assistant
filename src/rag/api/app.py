@@ -20,6 +20,7 @@ from langchain_core.documents import Document
 
 from rag.api.documents import UploadSizeLimit, document_routes
 from rag.api.errors import backend_failure
+from rag.api.frontend import serve_frontend
 from rag.api.jobs import IngestJob, IngestJobs, JobAlreadyRunning
 from rag.api.schemas import (
     ChatRequest,
@@ -232,6 +233,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         return _job_body(job)
 
     app.include_router(document_routes(settings, get_library, jobs, start_indexing_if_idle))
+    if settings.frontend_dist:
+        serve_frontend(app, Path(settings.frontend_dist))  # last: it reserves the paths of the routes above
     return app
 
 

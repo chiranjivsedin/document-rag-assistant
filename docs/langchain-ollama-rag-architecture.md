@@ -367,6 +367,13 @@ Which exceptions count as "unavailable" and which as "model failed" is decided i
 - **Plain `def` endpoints.** FastAPI runs them in a thread pool, so a slow answer doesn't block other requests, and the vector store's synchronous calls work as they do in the scripts.
 - **Services built on first use.** The vector store and models are created by the first `/chat` or ingestion job and then reused. The server therefore starts, and `/health` answers, while Docker or Ollama is down; a failed build is retried by the next request.
 - **CORS.** Browsers may call the API from the origins in `API_CORS_ORIGINS` (default `http://localhost:5173`, the usual React dev server), with `GET`, `POST` and `DELETE`.
+- **Serving the built web app (`FRONTEND_DIST`, `api/frontend.py`).** Off by default. When `FRONTEND_DIST` points at a build (`cd frontend && npm run build` makes `frontend/dist`), the API also serves the web app at `/` on its own port, so a server needs no Node.js and no CORS setup.
+  - **The API routes come first and are unchanged.** The web app only answers requests that no route matched, not even with another method: `GET /chat` stays 405. Unknown paths under the API's prefixes (`/health`, `/chat`, `/documents`, `/docs`, `/redoc`, `/openapi.json`) stay JSON 404s.
+  - **`/assets/...`** are Vite's build files. Their names carry a content hash, so they are cached for a year. A missing one is a 404, never the page.
+  - **Every other `GET`/`HEAD`** gets a top-level build file if one exists (for example a favicon), otherwise `index.html`. Both are sent with `Cache-Control: no-cache`, so a new build shows at once. A missing file (a last segment with a dot, such as `/logo.png`) stays a 404.
+  - **Safety:** Starlette's `StaticFiles` resolves every path, so nothing outside the build folder can be reached.
+  - **A build folder without `index.html` stops the API at startup** with a clear message. A wrong path is a deployment mistake, not a passing outage like Docker being down.
+  - **In development nothing changes:** leave `FRONTEND_DIST` empty and use `npm run dev`. Vite forwards the same relative API paths to the API.
 - **No authentication.** Anyone who can reach the API can use every endpoint, including uploading and deleting documents, so start it on `127.0.0.1` (as above), which only accepts connections from your own machine.
 
 ### 7.6 Document library
@@ -466,6 +473,7 @@ Settings come from `.env` (copy `.env.example`) or from environment variables; r
 | `VECTOR_TABLE` | `chunks` | Table name (letters, digits and `_` only) |
 | `DATABASE_URL` | none (required) | `.env.example` points it at the local Docker database: `postgresql://rag:…@127.0.0.1:5433/rag` |
 | `API_CORS_ORIGINS` | `http://localhost:5173` | Browser origins allowed to call the HTTP API, comma-separated |
+| `FRONTEND_DIST` | empty (off) | A built web app (`frontend/dist`) for the API to serve at `/`; relative to where the API is started, or absolute (section 7.5) |
 
 > **Use `127.0.0.1`, not `localhost`,** in `DATABASE_URL` and `OLLAMA_BASE_URL`. On Windows, `localhost` tries IPv6 first: the database connection stalls and Ollama calls lose about 2 s each. (`API_CORS_ORIGINS` is the exception: it is the address the browser shows, not a connection the app opens.)
 

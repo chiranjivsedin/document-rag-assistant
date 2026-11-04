@@ -15,6 +15,13 @@ def test_defaults():
     assert s.database_url is None
     assert (s.vector_store, s.vector_table) == ("pgvector", "chunks")
     assert s.api_cors_origins == ("http://localhost:5173",)
+    assert s.frontend_dist is None  # the API serves only its endpoints unless FRONTEND_DIST is set
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("frontend/dist", "frontend/dist"), ("  E:\\rag\\dist ", "E:\\rag\\dist"),
+                                               ("", None), ("   ", None)])
+def test_frontend_dist(raw, expected):
+    assert get_settings({"FRONTEND_DIST": raw}).frontend_dist == expected
 
 
 def test_cors_origins_are_a_comma_separated_list():

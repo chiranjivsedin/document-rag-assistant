@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-A working local prototype: LangChain + Ollama + pgvector in Docker, two command-line scripts, a FastAPI HTTP API over the same functions, a small document library (DMS: upload, indexing status, open/download, delete; `src/rag/dms/`), and a React frontend in `frontend/` (app shell with sidebar, session history, status card and theme switch; Chat, Documents and Ingestion screens; Release notes only places version-scoped questions in Chat). Not built yet: the 16.2 release-notes view, authentication, Azure providers, deployment, hybrid (keyword) search, a relevance cut-off.
+A working local prototype: LangChain + Ollama + pgvector in Docker, two command-line scripts, a FastAPI HTTP API over the same functions, a small document library (DMS: upload, indexing status, open/download, delete; `src/rag/dms/`), and a React frontend in `frontend/` (app shell with sidebar, session history, status card and theme switch; Chat, Documents and Ingestion screens; Release notes only places version-scoped questions in Chat). The API can also serve the built web app at `/` (`FRONTEND_DIST`, `src/rag/api/frontend.py`), so a server needs no Node.js. Not built yet: the 16.2 release-notes view, authentication, Azure providers, deployment, hybrid (keyword) search, a relevance cut-off.
 
 Branches:
 - `integration`: the complete working application (backend + frontend). Create each new phase's branch from it (e.g. `feature/dms-api`), and merge the branch back after review and approval.
 - `main`: lead-approved work only. It holds just the scaffold until the lead confirms requirements (VM, "16.2" product, mini DMS, hosting); `integration` is merged into it only then.
 - `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`, `feature/ui-redesign`, `fix/rag-answer-quality`, `fix/sidebar-history-scroll`, `docs/refresh-guides`: earlier branches, each contained in `integration`; kept for reference.
+- `feature/serve-frontend` (F1, from `feature/dms`): the API serves the built web app (`FRONTEND_DIST`). Merged into `integration` after `feature/dms`, after review.
 - `feature/dms`: the document library (D1 table and repository, D2 storage and endpoints, D3 indexing status and storage hardening, D4 Documents screen, then docs); merged into `integration` after review.
 
 ## Running the prototype (Windows, from the repo root)
@@ -24,6 +25,8 @@ ollama pull gemma3:4b && ollama pull nomic-embed-text             # Ollama must 
 .venv/Scripts/python.exe scripts/ask.py "What is deprecated?" --version 16.2   # optional --product, --k
 .venv/Scripts/python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000   # HTTP API; docs at /docs
 cd frontend && npm install && npm run dev                         # web app on http://localhost:5173 (needs the API)
+# Production-style instead: cd frontend && npm run build, then start uvicorn with FRONTEND_DIST=frontend/dist
+#   and open http://127.0.0.1:8000 (the API serves the build; leave FRONTEND_DIST empty while using npm run dev)
 ```
 
 - API endpoints (`src/rag/api/app.py`): `GET /health` (200 ok / 503 with `problems`), `POST /chat` (`{"question", "product"?, "version"?, "k"? 1–20}` → `answer`, `no_answer`, numbered `sources` with `excerpt`), `POST /documents/ingest` (no body; 202 + `job_id`, 409 if one is running), `GET /documents/ingest/{job_id}` (`running` / `succeeded` + `report` / `failed` + `error`; 404 if unknown). Document library (`src/rag/api/documents.py`): `POST /documents` (multipart `file`, `product`, `version`, `doc_type`; 201 + `ingest_job_id`, 409 path taken, 413 over `MAX_UPLOAD_MB`, 422 invalid), `GET /documents`, `GET /documents/{id}`, `GET /documents/{id}/file` (`?download=true`), `DELETE /documents/{id}` (204; 409 while a job runs; 500/503 with `file_deleted`/`chunks_deleted`/`record_deleted` if it stops part-way). Errors are `{"detail": "..."}`: 422 invalid input, 503 Ollama/database unavailable, 502 model call failed, 500 generic (details only in the server log).

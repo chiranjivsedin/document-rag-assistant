@@ -26,6 +26,7 @@ class Settings:
     vector_store: str
     vector_table: str
     api_cors_origins: tuple[str, ...]  # browser origins allowed to call the HTTP API
+    frontend_dist: str | None  # built web app (frontend/dist) the API serves at /; None = API only
 
 
 def get_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -49,6 +50,7 @@ def get_settings(env: Mapping[str, str] | None = None) -> Settings:
         vector_store=env.get("VECTOR_STORE", "pgvector"),
         vector_table=env.get("VECTOR_TABLE", "chunks"),
         api_cors_origins=_list(env.get("API_CORS_ORIGINS") or "http://localhost:5173"),
+        frontend_dist=(env.get("FRONTEND_DIST") or "").strip() or None,
     )
     _validate(settings)
     return settings

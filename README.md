@@ -84,6 +84,15 @@ npm install
 npm run dev
 ```
 
+Or let the API serve a built copy of the web app on its own port, with no Node.js needed to run it (open http://127.0.0.1:8000):
+
+```bash
+cd frontend && npm run build && cd ..
+FRONTEND_DIST=frontend/dist .venv/Scripts/python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
+```
+
+`FRONTEND_DIST` can also go in `.env`. Leave it empty while developing with `npm run dev`.
+
 There is no login yet, so keep the API on `127.0.0.1`. For a step-by-step PowerShell walkthrough, see [docs/run-locally-windows.md](docs/run-locally-windows.md).
 
 ## Tests

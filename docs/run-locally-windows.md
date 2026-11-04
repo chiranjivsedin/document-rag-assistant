@@ -179,6 +179,21 @@ npm run dev
 - **Ingestion:** the same indexing as step 6, with progress and results. **Release notes:** pick a version and a topic to place a version-scoped question in Chat.
 - Press **Ctrl+C** in this window to stop the web app.
 
+**Optional: the built web app, served by the API.** This is how a server runs it, without Node.js or Vite. Build it once, then start the API with `FRONTEND_DIST` pointing at the build:
+
+```powershell
+cd frontend
+npm run build
+cd ..
+$env:FRONTEND_DIST = "frontend\dist"
+.venv\Scripts\python.exe -m uvicorn rag.api.app:app --host 127.0.0.1 --port 8000
+```
+
+- Open **http://127.0.0.1:8000**. The app and the API now share one address.
+- Rebuild after changing the web app; a reload then shows the new build.
+- `$env:FRONTEND_DIST` lasts only for this PowerShell window. Remove it with `Remove-Item Env:FRONTEND_DIST`, or put `FRONTEND_DIST=frontend/dist` in `.env` instead.
+- If the folder has no `index.html`, the API refuses to start and says how to fix it.
+
 ## 10. If something isn't running
 
 Both scripts check the services first and stop with one clear line instead of a long error (the API returns the same lines with status 503):
