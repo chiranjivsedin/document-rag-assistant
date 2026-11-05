@@ -1,6 +1,8 @@
 import hashlib
 import io
+import logging
 import os
+import time
 
 import pytest
 from pypdf import PdfWriter
@@ -69,6 +71,9 @@ def test_invalid_folder_names(value):
     (".pdf", "document.pdf"),
     ("日本語.pdf", "document.pdf"),
     ("CON.txt", "_CON.txt"),
+    ("CON .txt", "_CON.txt"),
+    ("nul.backup.md", "_nul.backup.md"),
+    ("conin$.txt", "conin_.txt"),  # "$" isn't kept, so the result is an ordinary name
     ("x" * 300 + ".pdf", "x" * 116 + ".pdf"),
 ])
 def test_clean_filename(original, expected):
@@ -109,6 +114,9 @@ def test_source_for_rejects_paths_too_long_for_windows(docs, monkeypatch):
     # names Windows changes or treats as devices
     "a/x.txt.", "a/x.txt ", "a./x.txt", "a /x.txt", "a/CON", "a/con.txt", "acme/1.0/notes/NUL.md", "a/COM1.pdf",
     "LPT9/x.txt", "a/com\u00b9.txt", "a/ CON.txt",
+    # O2: Windows looks only at the part before the first dot, ignoring spaces before it
+    "a/CON .txt", "a/nul .md", "a/AUX  .pdf", "a/con..txt", "a/PRN.notes.txt", "a/LPT1 .md", "CON .d/x.txt",
+    "a/CONIN$", "a/conin$.txt", "a/CONOUT$.md", "a/ conout$ .txt",
     # control characters
     "a/x\x00.txt", "a/x\ty.txt", "a/x\x1f.txt", "a/x\x7f.txt", "a/x\ny.txt",
 ])
@@ -120,6 +128,7 @@ def test_path_of_refuses_unsafe_paths(docs, source):
 @pytest.mark.parametrize("source", [
     "a/b/c.txt", "a/ leading space.txt", "a/ leading folder/x.txt", "a/b c/x.txt", "a/con-notes.txt",
     "a/console.txt", "a/COM10.txt", "a/Notes (v2).pdf", "documentum/16.2/release-notes/notes.pdf",
+    "a/conin.txt", "a/CONOUT.md", "a/CLOCK$.txt", "a/x CON.txt", "a/NULL.txt", "a/aux-notes.md",
 ])
 def test_path_of_accepts_ordinary_names_including_leading_spaces(docs, source):
     assert docs.path_of(source) == docs.documents_dir.joinpath(*source.split("/"))
@@ -312,3 +321,105 @@ def test_readable_file(docs):
     assert docs.readable_file("a/1/notes/missing.txt") is None
     (docs.documents_dir / "a" / "1" / "notes" / "folder.txt").mkdir()
     assert docs.readable_file("a/1/notes/folder.txt") is None  # a folder isn't a document
+
+
+# Abandoned temporary uploads (O3): left in .uploads when the server stops in the middle of an upload
+
+HOUR = 60 * 60
+
+
+def age(path, seconds):
+    then = time.time() - seconds
+    os.utime(path, (then, then))
+
+
+def abandoned(docs, name, seconds=2 * HOUR):
+    temp = docs.documents_dir / ".uploads"
+    temp.mkdir(exist_ok=True)
+    (temp / name).write_bytes(b"partial upload")
+    age(temp / name, seconds)
+    return temp / name
+
+
+def test_abandoned_uploads_are_removed(docs, caplog):
+    caplog.set_level(logging.INFO, logger="rag.dms.storage")
+    old_pdf = abandoned(docs, "0" * 32 + ".pdf")
+    old_md = abandoned(docs, "a" * 32 + ".md")
+    recent = abandoned(docs, "b" * 32 + ".txt", seconds=60)  # may still be being written
+    kept = [recent,
+            abandoned(docs, "notes.txt"),                  # not a name save() creates
+            abandoned(docs, "C" * 32 + ".pdf"),            # nor is this (save() uses lowercase hex)
+            abandoned(docs, "c" * 32 + ".docx"),           # nor this suffix
+            abandoned(docs, "c" * 31 + ".pdf")]
+    assert docs.remove_abandoned_uploads() == 2
+    assert not old_pdf.exists() and not old_md.exists()
+    assert all(path.exists() for path in kept)
+    assert "Removed 2 abandoned upload" in caplog.text
+
+
+def test_without_an_uploads_folder_there_is_nothing_to_remove(docs):
+    assert docs.remove_abandoned_uploads() == 0
+    assert not (docs.documents_dir / ".uploads").exists()  # and none is created
+
+
+@pytest.mark.parametrize("make_link", [make_junction, make_symlink])
+def test_a_linked_uploads_folder_is_never_cleaned(docs, outside, make_link, caplog):
+    victim = outside / ("e" * 32 + ".pdf")
+    victim.write_bytes(b"someone else's file")
+    age(victim, 2 * HOUR)
+    make_link(docs.documents_dir / ".uploads", outside)
+    assert docs.remove_abandoned_uploads() == 0
+    assert victim.exists()
+    assert "link" in caplog.text
+
+
+# older_than=-60 makes every entry count as abandoned, so only the kind of entry decides what is removed.
+
+def test_only_regular_files_are_removed_never_a_folder(docs, caplog):
+    temp = docs.documents_dir / ".uploads"
+    temp.mkdir()
+    (temp / ("d" * 32 + ".md")).mkdir()
+    (temp / ("d" * 32 + ".md") / "inside.txt").write_text("kept")
+    regular = temp / ("0" * 32 + ".pdf")
+    regular.write_bytes(b"partial upload")
+    assert docs.remove_abandoned_uploads(older_than=-60) == 1
+    assert not regular.exists()
+    assert (temp / ("d" * 32 + ".md") / "inside.txt").read_text() == "kept"
+    assert "Couldn't remove" not in caplog.text  # a folder is skipped, not attempted
+
+
+@pytest.mark.parametrize("make_link", [make_junction, make_symlink])
+def test_a_link_named_like_a_temp_file_is_left_alone(docs, outside, make_link):
+    temp = docs.documents_dir / ".uploads"
+    temp.mkdir()
+    name = "e" * 32 + (".md" if make_link is make_junction else ".txt")  # a junction links a folder
+    target = outside if make_link is make_junction else outside / "secret.txt"
+    make_link(temp / name, target)
+    assert docs.remove_abandoned_uploads(older_than=-60) == 0
+    assert storage_module.is_link(temp / name)  # the link itself is still there
+    assert (outside / "secret.txt").read_text() == "not a document"
+
+
+def test_a_crash_after_linking_leaves_a_document_that_cleanup_makes_servable_again(docs):
+    # The server stopped between os.link() and removing the temporary name: the document has two names, so it
+    # is refused (R3). Removing the temporary name leaves the document, with one name again.
+    docs.save(io.BytesIO(b"kept"), "a/1/notes/x.txt")
+    document = docs.documents_dir / "a" / "1" / "notes" / "x.txt"
+    temp = docs.documents_dir / ".uploads" / ("f" * 32 + ".txt")
+    os.link(document, temp)
+    age(temp, 2 * HOUR)
+    with pytest.raises(UnsafePath, match="2 hard links"):
+        docs.readable_file("a/1/notes/x.txt")
+    assert docs.remove_abandoned_uploads() == 1
+    assert docs.readable_file("a/1/notes/x.txt").read_bytes() == b"kept"
+
+
+def test_a_temp_file_that_cant_be_removed_is_logged_not_raised(docs, monkeypatch, caplog):
+    path = abandoned(docs, "9" * 32 + ".pdf")
+
+    def refuse(self, missing_ok=False):
+        raise PermissionError("in use by another process")
+
+    monkeypatch.setattr(type(path), "unlink", refuse)
+    assert docs.remove_abandoned_uploads() == 0
+    assert "Couldn't remove" in caplog.text and "in use" in caplog.text

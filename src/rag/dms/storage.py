@@ -15,30 +15,43 @@ runbook), which closes it.
 """
 
 import hashlib
+import logging
 import os
 import re
+import stat
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from rag.ingestion.loaders import SUPPORTED_SUFFIXES, load_file
+from rag.ingestion.loaders import SUPPORTED_SUFFIXES, is_link, load_file
 
 CONTENT_TYPES = {".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain"}
 TEMP_FOLDER = ".uploads"  # hidden, so iter_files() skips it
+# A temporary upload untouched this long was left by a server that stopped mid-upload (saving writes it
+# continuously, so one in progress is always recent).
+ABANDONED_AFTER_SECONDS = 60 * 60
 MAX_NAME_CHARS = 64  # product, version, doc_type
 MAX_FILENAME_CHARS = 120
 # The hosting VM doesn't enable long paths, where Windows limits a full path to 259 characters.
 MAX_PATH_CHARS = 240
 _COPY_CHUNK = 1024 * 1024
 
+logger = logging.getLogger(__name__)
+
 _FOLDER_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9 ._()-]+")
-# Names Windows reserves for devices, with or without an extension (CON, CON.pdf, ...).
-_RESERVED = re.compile(r"(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(\..*)?", re.IGNORECASE)
+# Names Windows reserves for devices. COM0 and LPT0 are included to be safe; CLOCK$ is no longer one.
+_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{port}{n}" for port in ("COM", "LPT") for n in (*"0123456789", "\u00b9", "\u00b2", "\u00b3")}
+)
 # Control characters (including NUL): never part of a stored file name.
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# The names save() gives temporary files: a random 32-digit lowercase hex name and a supported suffix.
+_TEMP_NAME = re.compile(r"[0-9a-f]{32}(?:" + "|".join(re.escape(s) for s in sorted(SUPPORTED_SUFFIXES)) + ")")
 
 
 class InvalidDocument(ValueError):
@@ -67,7 +80,7 @@ def check_folder_name(value: str, field: str) -> str:
     if not value:
         raise InvalidDocument(f"{field} is required.")
     if (len(value) > MAX_NAME_CHARS or not _FOLDER_NAME.fullmatch(value) or ".." in value
-            or _RESERVED.fullmatch(value)):
+            or _is_device_name(value)):
         raise InvalidDocument(
             f"{field} must be 1-{MAX_NAME_CHARS} letters, digits, dots, hyphens or underscores, "
             "starting and ending with a letter or digit (for example 16.2 or release-notes)."
@@ -90,7 +103,7 @@ def clean_filename(original: str) -> str:
     stem = _UNSAFE_FILENAME_CHARS.sub("_", stem)
     stem = re.sub(r"\s+", " ", stem).strip(" .")  # Windows drops trailing dots and spaces
     stem = stem[:MAX_FILENAME_CHARS - len(suffix)].rstrip(" .") or "document"
-    if _RESERVED.fullmatch(stem):
+    if _is_device_name(stem):
         stem = f"_{stem}"
     return stem + suffix
 
@@ -157,7 +170,7 @@ class DocumentStorage:
         path = self.documents_dir
         for part in parts:
             path = path / part
-            if _is_link(path):
+            if is_link(path):
                 raise UnsafePath(f"{source!r} goes through a link inside DOCUMENTS_DIR")
         return path
 
@@ -212,9 +225,48 @@ class DocumentStorage:
         """The hidden folder uploads are written to first; refused if it is a link (it would send them elsewhere)."""
         temp_dir = self.documents_dir / TEMP_FOLDER
         temp_dir.mkdir(exist_ok=True)
-        if _is_link(temp_dir) or not temp_dir.is_dir():
+        if is_link(temp_dir) or not temp_dir.is_dir():
             raise UnsafePath(f"{temp_dir} is not a plain folder")
         return temp_dir
+
+    def remove_abandoned_uploads(self, older_than: float = ABANDONED_AFTER_SECONDS) -> int:
+        """Delete temporary files left in .uploads by a server that stopped mid-upload; returns how many.
+
+        Only what save() creates is touched: regular files directly in a plain .uploads folder, named like its
+        temporary files, and untouched for `older_than` seconds, so an upload still being written is left
+        alone. Nothing is done through a link: a linked .uploads folder is skipped, and lstat() shows a link
+        inside it as a link or a folder, never a regular file. Removing a temporary name never removes a
+        document: if the server stopped after linking an upload into place, the document keeps its own name
+        (and has one link again, so it can be served). Problems are logged, never raised: this runs when the
+        library starts.
+        """
+        temp_dir = self.documents_dir / TEMP_FOLDER
+        try:
+            if is_link(temp_dir):
+                logger.warning("Not cleaning %s: it is a link", temp_dir)
+                return 0
+            if not temp_dir.is_dir():
+                return 0
+            entries = list(temp_dir.iterdir())
+        except OSError as error:
+            logger.warning("Couldn't check %s for abandoned uploads: %s", temp_dir, error)
+            return 0
+        cutoff = time.time() - older_than
+        removed = 0
+        for path in entries:
+            try:
+                if not _TEMP_NAME.fullmatch(path.name):
+                    continue
+                info = path.lstat()  # the entry itself: a link is never S_ISREG
+                if not stat.S_ISREG(info.st_mode) or info.st_mtime > cutoff:
+                    continue
+                path.unlink()
+                removed += 1
+            except OSError as error:
+                logger.warning("Couldn't remove the abandoned upload %s: %s", path, error)
+        if removed:
+            logger.info("Removed %d abandoned upload file(s) from %s", removed, temp_dir)
+        return removed
 
     def _copy(self, stream: BinaryIO, temp: Path) -> tuple[int, str]:
         size, digest = 0, hashlib.sha256()
@@ -230,16 +282,17 @@ class DocumentStorage:
         return size, digest.hexdigest()
 
 
-def _is_link(path: Path) -> bool:
-    """A symlink or a Windows directory junction (Path.is_junction exists from Python 3.12)."""
-    return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+def _is_device_name(name: str) -> bool:
+    """A name Windows treats as a device. It looks only at the part before the first dot, ignoring spaces
+    around it, so "CON", "con.txt", "CON .txt" and " nul..md" all name a device."""
+    return name.strip(" ").partition(".")[0].rstrip(" ").upper() in _DEVICE_NAMES
 
 
 def _safe_part(part: str) -> bool:
     """One folder or file name of a stored path. Leading spaces are allowed (they are real names on Windows);
     a trailing dot or space isn't (Windows drops it, so two names would mean one file), nor a device name."""
     return (part not in ("", ".", "..") and not part.startswith(".") and not part.endswith((".", " "))
-            and not _RESERVED.fullmatch(part.strip()))
+            and not _is_device_name(part))
 
 
 def _existing_name(parent: Path, name: str) -> str:

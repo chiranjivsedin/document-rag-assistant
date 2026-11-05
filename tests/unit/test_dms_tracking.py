@@ -1,5 +1,8 @@
 import hashlib
 import io
+import os
+import time
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -7,6 +10,7 @@ import pytest
 from rag.dms.library import DocumentLibrary
 from rag.dms.storage import DocumentStorage
 from rag.dms.tracking import FILE_MISSING, NO_TEXT
+from rag.ingestion.loaders import DocumentsFolderUnreadable
 
 MB = 1024 * 1024
 OUTAGE = "Ollama or the database stopped responding. Check GET /health."
@@ -243,6 +247,60 @@ def test_a_run_after_a_restart_releases_documents_left_processing(library, fake_
     assert fake_repository.rows[document.id].status == "indexed"
 
 
+def test_an_upload_given_a_second_hard_link_is_marked_failed_not_indexed(library, fake_repository, fake_index,
+                                                                         fake_pipeline, tmp_path_factory, caplog):
+    document = upload(library)
+    other_name = tmp_path_factory.mktemp("outside") / "other-name.md"
+    os.link(library.storage.documents_dir / document.source, other_name)  # the same file, also outside
+
+    run(library, fake_pipeline)
+
+    row = fake_repository.rows[document.id]
+    assert (row.status, row.error) == ("failed", FILE_MISSING)
+    assert document.source not in fake_index.chunks
+    assert "2 hard links" in caplog.text
+
+    other_name.unlink()  # one name again: the next run (which retries failed documents) indexes it
+    run(library, fake_pipeline)
+    assert fake_repository.rows[document.id].status == "indexed"
+
+
+def test_an_indexed_document_given_a_second_hard_link_leaves_the_index(library, fake_repository, fake_index,
+                                                                       fake_pipeline, tmp_path_factory):
+    document = upload(library)
+    run(library, fake_pipeline)
+    assert fake_repository.rows[document.id].status == "indexed"
+    os.link(library.storage.documents_dir / document.source, tmp_path_factory.mktemp("outside") / "other.md")
+
+    run(library, fake_pipeline)
+
+    assert document.source not in fake_index.chunks  # its passages are removed
+    row = fake_repository.rows[document.id]
+    assert (row.status, row.error) == ("failed", FILE_MISSING)
+
+
+def test_a_run_changes_nothing_when_the_documents_folder_cant_be_listed(library, fake_repository, fake_index,
+                                                                        fake_pipeline, monkeypatch):
+    indexed = upload(library, "indexed.md")
+    run(library, fake_pipeline)
+    waiting = upload(library, "waiting.md")
+    chunks_before = dict(fake_index.chunks)
+    root, real_iterdir = library.storage.documents_dir, Path.iterdir
+
+    def iterdir(self):
+        if self == root:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    with pytest.raises(DocumentsFolderUnreadable):
+        run(library, fake_pipeline)
+
+    assert fake_index.chunks == chunks_before  # nothing was removed from the index
+    assert fake_repository.rows[indexed.id].status == "indexed"
+    assert (fake_repository.rows[waiting.id].status, fake_repository.rows[waiting.id].error) == ("failed", OUTAGE)
+
+
 def test_adoption_skips_files_the_library_could_not_serve_safely(library, fake_repository, tmp_path_factory):
     outside = tmp_path_factory.mktemp("outside")
     (outside / "secret.md").write_text("secret")
@@ -282,3 +340,24 @@ def test_build_library_releases_interrupted_claims_then_adopts(tmp_path, fake_re
     assert fake_repository.rows[interrupted.id].status == "pending"
     assert fake_repository.status_of("acme/1.0/notes/by-hand.md") == "pending"
     assert built.repository is fake_repository
+
+
+def test_build_library_removes_uploads_abandoned_by_a_stopped_server(tmp_path, fake_repository, fake_index,
+                                                                     monkeypatch):
+    from rag.config import get_settings
+    from rag.dms import library as library_module
+
+    (tmp_path / ".uploads").mkdir()
+    left = tmp_path / ".uploads" / ("0" * 32 + ".md")
+    left.write_text("partial upload")
+    then = time.time() - 2 * 60 * 60
+    os.utime(left, (then, then))
+    fake_repository.create_table = lambda: None
+    monkeypatch.setattr(library_module, "DocumentRepository", lambda url, table: fake_repository)
+    monkeypatch.setattr(library_module, "index_access", lambda settings: fake_index.access())
+
+    library_module.build_library(get_settings({"DATABASE_URL": "postgresql://u:p@h/db",
+                                               "DOCUMENTS_DIR": str(tmp_path)}))
+
+    assert not left.exists()
+    assert fake_repository.list_all() == []  # the temporary file was never a document

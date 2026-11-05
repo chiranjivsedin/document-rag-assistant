@@ -171,8 +171,9 @@ class DocumentLibrary:
 def build_library(settings: Settings, table: str = "documents") -> DocumentLibrary:
     """Connect to the documents table (creating it on first use) and the documents folder.
 
-    Documents left processing by a server that stopped mid-run go back to pending, and files already in the
-    documents folder are adopted, so the library lists everything the assistant can answer from. This runs
+    Documents left processing by a server that stopped mid-run go back to pending, temporary files it left
+    mid-upload are removed, and files already in the documents folder are adopted, so the library lists
+    everything the assistant can answer from. This runs
     once per server process, before its first ingestion run, which is why it can't reset a running job: the
     API must run as a single process (one uvicorn worker), and an old process must be stopped completely
     before a new one starts.
@@ -187,6 +188,7 @@ def build_library(settings: Settings, table: str = "documents") -> DocumentLibra
         index=index_access(settings),
     )
     repository.release_processing()
+    library.storage.remove_abandoned_uploads()  # logs, never raises
     if library.storage.documents_dir.is_dir():
         library.tracker.adopt_untracked()
     return library

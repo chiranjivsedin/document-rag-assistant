@@ -1,9 +1,10 @@
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
 
-from rag.ingestion.loaders import file_metadata, iter_files, load_file
+from rag.ingestion.loaders import DocumentsFolderUnreadable, file_metadata, is_link, iter_files, load_file
 
 
 def make_pdf(path: Path, pages: list[str]) -> None:
@@ -89,3 +90,154 @@ def test_empty_text_file_gives_no_documents(tmp_path):
 def test_unsupported_type_is_rejected(docs_dir):
     with pytest.raises(ValueError, match="Unsupported file type"):
         load_file(docs_dir / "documentum" / "image.png", docs_dir)
+
+
+# Links: ingestion never reads a file through a link (symlink or Windows junction), nor a file with more than
+# one hard link: either can bring in a file from outside the documents folder.
+
+VISIBLE = ["documentum/16.2/release-notes/notes.pdf", "documentum/16.2/release-notes/summary.md", "readme.txt"]
+
+
+def make_junction(link, target):
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    except (ImportError, OSError):
+        pytest.skip("can't create a junction here (not Windows)")
+
+
+def make_symlink(link, target):
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError:
+        pytest.skip("this account can't create symlinks (Windows needs Developer Mode or admin rights)")
+
+
+@pytest.fixture
+def outside(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("outside")
+    (folder / "16.2" / "release-notes").mkdir(parents=True)
+    (folder / "16.2" / "release-notes" / "secret.md").write_text("outside the documents folder", encoding="utf-8")
+    (folder / "lone.md").write_text("outside too", encoding="utf-8")
+    return folder
+
+
+def listed(docs_dir):
+    return [p.relative_to(docs_dir).as_posix() for p in iter_files(docs_dir)]
+
+
+@pytest.mark.parametrize("make_link", [make_junction, make_symlink])
+def test_iter_files_never_enters_a_linked_folder(docs_dir, outside, make_link, caplog):
+    make_link(docs_dir / "acme", outside)                              # at the top
+    make_link(docs_dir / "documentum" / "16.3", outside / "16.2")      # and deeper down
+    assert listed(docs_dir) == VISIBLE
+    assert "acme" in caplog.text and "16.3" in caplog.text and "link" in caplog.text
+
+
+def test_iter_files_skips_a_linked_file(docs_dir, outside, caplog):
+    make_symlink(docs_dir / "documentum" / "linked.md", outside / "lone.md")
+    assert listed(docs_dir) == VISIBLE
+    assert "linked.md" in caplog.text
+
+
+def test_iter_files_skips_files_with_more_than_one_hard_link(docs_dir, outside, caplog):
+    os.link(outside / "lone.md", docs_dir / "documentum" / "hard.md")
+    assert listed(docs_dir) == VISIBLE
+    assert "hard.md" in caplog.text and "2 hard links" in caplog.text
+
+
+def test_junctions_are_detected_without_path_is_junction(docs_dir, outside, monkeypatch):
+    """Python 3.10 and 3.11 have no Path.is_junction: the reparse tag from lstat tells the same."""
+    from rag.dms.storage import DocumentStorage, UnsafePath
+
+    make_junction(docs_dir / "acme", outside)
+    owner = next((c for c in type(docs_dir).__mro__ if "is_junction" in vars(c)), None)
+    if owner is not None:
+        monkeypatch.delattr(owner, "is_junction")
+    assert not hasattr(docs_dir, "is_junction")
+
+    assert is_link(docs_dir / "acme")
+    assert not any(is_link(docs_dir / name) for name in ("documentum", "readme.txt", "missing"))
+    assert listed(docs_dir) == VISIBLE                                   # ingestion
+    with pytest.raises(UnsafePath):                                       # and the document library
+        DocumentStorage(docs_dir, max_bytes=1024).path_of("acme/16.2/release-notes/secret.md")
+
+
+# The documents folder itself: missing or unreadable is an error, never "empty" (which would empty the index).
+
+def refuse_listing(monkeypatch, folder):
+    real_iterdir = Path.iterdir
+
+    def iterdir(self):
+        if self == folder:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+
+def test_a_missing_documents_folder_is_an_error_not_an_empty_folder(tmp_path):
+    with pytest.raises(DocumentsFolderUnreadable, match="doesn't exist"):
+        listed(tmp_path / "missing")
+    (tmp_path / "a-file.txt").write_text("not a folder")
+    with pytest.raises(DocumentsFolderUnreadable):
+        listed(tmp_path / "a-file.txt")
+
+
+def test_a_documents_folder_that_cant_be_listed_is_an_error(docs_dir, monkeypatch):
+    refuse_listing(monkeypatch, docs_dir)
+    with pytest.raises(DocumentsFolderUnreadable, match="Access is denied") as raised:
+        listed(docs_dir)
+    # Not an OSError on purpose: the API reports those as Ollama or the database being unreachable.
+    assert not isinstance(raised.value, OSError)
+
+
+def test_a_subfolder_that_cant_be_listed_is_skipped_and_logged(docs_dir, monkeypatch, caplog):
+    refuse_listing(monkeypatch, docs_dir / "documentum")
+    assert listed(docs_dir) == ["readme.txt"]
+    assert "documentum" in caplog.text and "can't be read" in caplog.text
+
+
+class RecordingStore:
+    """Records what the pipeline asks the vector store to do."""
+
+    def __init__(self):
+        self.added, self.deleted = [], []
+
+    def add_documents(self, docs):
+        self.added.extend(docs)
+
+    def delete(self, filter):
+        self.deleted.append(filter["source"])
+
+
+def test_ingestion_changes_nothing_when_the_documents_folder_cant_be_listed(docs_dir, monkeypatch):
+    from rag.config import get_settings
+    from rag.ingestion.pipeline import ingest
+
+    store = RecordingStore()
+    indexed = {source: ("hash", "nomic-embed-text") for source in VISIBLE}
+    refuse_listing(monkeypatch, docs_dir)
+    with pytest.raises(DocumentsFolderUnreadable):
+        ingest(docs_dir, store, indexed, get_settings({}))
+    assert store.deleted == [] and store.added == []
+
+
+def test_a_documents_folder_that_is_itself_a_link_is_still_read(docs_dir, tmp_path_factory):
+    # DOCUMENTS_DIR is configuration: refusing it would make every file look gone and empty the index.
+    link = tmp_path_factory.mktemp("elsewhere") / "documents"
+    make_junction(link, docs_dir)
+    assert listed(link) == VISIBLE
+
+
+def test_content_reached_through_a_link_is_removed_from_the_index(tmp_path, outside):
+    """A file indexed before its folder became a link is no longer listed, so the next run removes its chunks."""
+    from rag.config import get_settings
+    from rag.ingestion.pipeline import ingest
+
+    make_junction(tmp_path / "acme", outside)
+    store = RecordingStore()
+    indexed = {"acme/16.2/release-notes/secret.md": ("hash", "nomic-embed-text")}
+    report = ingest(tmp_path, store, indexed, get_settings({}))
+    assert report.removed == ["acme/16.2/release-notes/secret.md"]
+    assert store.added == []

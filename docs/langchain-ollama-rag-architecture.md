@@ -144,7 +144,7 @@ Files get there in two ways: copied in by hand, or uploaded through the document
 
 ### 5.2 Load (`loaders.py`)
 
-- `iter_files()` lists supported files in a stable (sorted) order.
+- `iter_files()` lists supported files in a stable (sorted) order. It skips hidden files and folders, never goes through a symlink or junction inside the folder, and skips files with more than one hard link, since either could bring in a file from outside it. Each skipped one is logged, and counts as gone: ingestion removes anything it had indexed from it. A subfolder that can't be read is skipped the same way, with a warning. The documents folder itself is different: if it is missing or can't be listed, the run fails before anything in the index changes (`DocumentsFolderUnreadable`, reported as "Ingestion failed unexpectedly; see the server log"), instead of looking empty and removing everything.
 - `load_file()` returns LangChain `Document`s:
   - **PDF:** one `Document` per page that has text, with `page` = page number (1, 2, …). Pages without a text layer (scans) are skipped.
   - **Markdown / text:** one `Document` for the whole file, `page` = `None`.
@@ -431,7 +431,7 @@ The web app checks the same name, type and empty-file rules before sending (`fro
 
 A delete that stops part-way answers 500 (or 503 when the database is down) with `detail` saying what happened, plus `file_deleted`, `chunks_deleted` and `record_deleted`.
 
-**Unsafe paths.** Every path is checked by what it contains: relative, no `..`, no drive or `:`, no hidden parts, no control characters, no trailing dot or space, no Windows device names. Any symlink or junction on the way is refused, as is the `.uploads/` folder itself if it is a link, and a file with more than one hard link is neither served nor recorded. Such a case answers 500 "The document's file can't be used safely on this server (its path or a link on the way isn't allowed); see the server log." Code can't fully rule out a folder being swapped for a link between the check and the write on Windows, so on a server only the service account and administrators should be allowed to write to `DOCUMENTS_DIR`.
+**Unsafe paths.** Every path is checked by what it contains: relative, no `..`, no drive or `:`, no hidden parts, no control characters, no trailing dot or space, no Windows device names (judged as Windows does: by the part before the first dot, ignoring spaces, so `CON .txt` and `CONIN$` count too). Any symlink or junction on the way is refused, as is the `.uploads/` folder itself if it is a link, and a file with more than one hard link is neither served nor recorded. Such a case answers 500 "The document's file can't be used safely on this server (its path or a link on the way isn't allowed); see the server log." Code can't fully rule out a folder being swapped for a link between the check and the write on Windows, so on a server only the service account and administrators should be allowed to write to `DOCUMENTS_DIR`.
 
 **Errors from the document endpoints**
 
@@ -647,8 +647,8 @@ RAG/
 - No follow-up run starts after a failed run, so documents uploaded during it stay *pending* until indexing is started again.
 - Deleting a document is refused while any ingestion job runs.
 - Files put in the documents folder by hand appear in the library only when it starts or after the next run, and wait as *pending* until a run happens; nothing starts indexing at server start-up. The first library request after a start reads every such file once to fingerprint it.
-- Links and hard links inside the documents folder are refused, but the ingestion pipeline (unchanged) may still index files reached that way. On a server, only the service account and administrators should be able to write to `DOCUMENTS_DIR`.
-- A crash in the middle of saving an upload can leave a temporary file in `.uploads/`; indexing ignores it, but nothing deletes it.
+- Links and hard links inside the documents folder are refused by the library and skipped by ingestion. A folder swapped for a link at the very moment a file is written can't be ruled out in code on Windows, so on a server only the service account and administrators should be able to write to `DOCUMENTS_DIR`.
+- A crash in the middle of saving an upload can leave a temporary file in `.uploads/`. Indexing ignores it, and the library deletes it when it next starts, once it has been untouched for an hour (otherwise at a later start).
 - `/health` (and the check before `/chat` and ingestion) takes about 12 s to report a stopped database, because of the 10 s connection timeout.
 - `.env.example` mentions a remote PostgreSQL (through an SSH tunnel) as an alternative, but no remote database is set up for this app yet.
 - The `documents/` folder convention assumes versioned product documentation; files outside it work but cannot be filtered by version.

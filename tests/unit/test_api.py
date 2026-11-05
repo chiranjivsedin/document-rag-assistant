@@ -14,6 +14,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rag.api import app as api
 from rag.config import get_settings
 from rag.generation.prompts import NO_ANSWER
+from rag.ingestion.loaders import DocumentsFolderUnreadable
 from rag.ingestion.pipeline import IngestReport
 from rag.service import Services
 
@@ -468,6 +469,9 @@ UNAVAILABLE = "Ollama or the database stopped responding. Check GET /health."
     (psycopg.OperationalError("password secret rejected"), UNAVAILABLE),
     (EMBEDDING_MODEL_MISSING, "The model service failed: model nomic-embed-text not found"),
     (RuntimeError("bug near postgresql://rag:secret@db"), "Ingestion failed unexpectedly; see the server log."),
+    # The documents folder can't be listed: not reported as Ollama or the database being down
+    (DocumentsFolderUnreadable("The documents folder C:\\secret\\docs can't be read: Access is denied"),
+     "Ingestion failed unexpectedly; see the server log."),
 ])
 def test_failed_job_reports_a_safe_message(checks, docs_settings, monkeypatch, error, message):
     client, _ = ingest_client(docs_settings, monkeypatch, FakeIngest(result=error))
