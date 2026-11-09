@@ -43,8 +43,10 @@ def test_build_services_wires_store_and_chat_model(monkeypatch):
     monkeypatch.setattr(service, "get_embeddings", lambda settings: "embeddings")
     monkeypatch.setattr(service, "get_vector_store", lambda settings, embeddings: f"store({embeddings})")
     monkeypatch.setattr(service, "get_chat_model", lambda settings: "chat model")
+    monkeypatch.setattr(service, "get_keyword_search", lambda settings: "keyword search")
     built = build_services(SETTINGS)
-    assert built == Services(settings=SETTINGS, store="store(embeddings)", chat_model="chat model")
+    assert built == Services(settings=SETTINGS, store="store(embeddings)", chat_model="chat model",
+                             keyword_search="keyword search")
 
 
 def test_build_services_for_ingest_skips_the_chat_model(monkeypatch):
@@ -142,3 +144,53 @@ def test_sources_to_show():
     assert sources_to_show(NO_ANSWER, docs) == []
     assert sources_to_show("Sorry. " + NO_ANSWER, docs) == []
     assert sources_to_show("Anything.", []) == []
+
+
+# Hybrid search: the keyword search is used when HYBRID_SEARCH is on and the services have one.
+
+
+class FakeHybridStore(FakeStore):
+    """Also answers searches by vector, as PGVectorStore does for hybrid retrieval."""
+
+    class Embeddings:
+        def embed_query(self, text):
+            return [0.1, 0.2]
+
+    embeddings = Embeddings()
+
+    def similarity_search_with_score_by_vector(self, embedding, k, filter):
+        self.searches.append({"embedding": embedding, "k": k, "filter": filter})
+        return self.results
+
+
+def keyword_hits(*docs):
+    calls = []
+
+    def search(question, embedding, filters, limit):
+        calls.append({"question": question, "embedding": embedding, "filters": filters, "limit": limit})
+        return list(docs)
+
+    return search, calls
+
+
+def test_find_passages_merges_keyword_hits_when_hybrid_search_is_on():
+    hit = Document(id="dfs", page_content="DFS is no longer installed with the server.",
+                   metadata={"doc_type": "release-notes", "distance": 0.39})
+    search, calls = keyword_hits(hit)
+    store = FakeHybridStore(release_notes_case())
+    services = Services(settings=SETTINGS, store=store, chat_model=None, keyword_search=search)
+    docs = find_passages(services, "Is DFS installed?", k=5, version="1.0", product="acme")
+    assert hit in docs and hit.metadata["found_by"] == "keyword"
+    assert len(docs) == 5
+    assert calls == [{"question": "Is DFS installed?", "embedding": [0.1, 0.2],
+                      "filters": {"version": "1.0", "product": "acme"}, "limit": 20}]
+    assert store.searches == [{"embedding": [0.1, 0.2], "k": 20, "filter": {"version": "1.0", "product": "acme"}}]
+
+
+def test_find_passages_ignores_the_keyword_search_when_hybrid_search_is_off():
+    settings = get_settings({"DATABASE_URL": SETTINGS.database_url, "HYBRID_SEARCH": "false"})
+    search, calls = keyword_hits()
+    store = FakeStore(PASSAGES)
+    find_passages(Services(settings=settings, store=store, chat_model=None, keyword_search=search), "Q?")
+    assert calls == []
+    assert store.searches[0]["query"] == "Q?"

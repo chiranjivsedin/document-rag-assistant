@@ -46,7 +46,8 @@ def main() -> int:
     if sources:
         print("\nSources:")
         for number, doc in enumerate(sources, 1):
-            print(f"  [{number}] {source_label(doc)}  (distance {doc.metadata['distance']:.3f})")
+            found_by = f", found by {doc.metadata['found_by']}" if "found_by" in doc.metadata else ""
+            print(f"  [{number}] {source_label(doc)}  (distance {doc.metadata['distance']:.3f}{found_by})")
     print(f"\n({time.monotonic() - started:.1f}s, model {settings.llm_model})")
     return 0
 

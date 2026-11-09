@@ -47,7 +47,7 @@ flowchart TD
     subgraph ASK["Phase 2 · Answering — python scripts/ask.py your-question --version 16.2"]
         direction TB
         A1["Load settings + check services<br/>config / health"] --> A2["Connect to vector store<br/>providers.get_vector_store()"]
-        A2 --> A3["Find the k closest chunks, keeping places<br/>for release notes (optional product / version filter)<br/>service.find_passages() → search.retrieve()"]
+        A2 --> A3["Find the k best chunks: vector + keyword search,<br/>merged (RRF), keeping places for release notes<br/>(optional product / version filter)<br/>service.find_passages() → search.retrieve()"]
         A3 --> A4{"Any chunks found?"}
         A4 -->|no| A4a["Reply: I don't know based on<br/>the available documents."]
         A4 -->|yes| A5["Number the chunks [1] [2] …<br/>and build the prompt<br/>prompts.format_context() + ANSWER_PROMPT"]
@@ -57,7 +57,7 @@ flowchart TD
         A7b --> A8["Print Sources list:<br/>file · version · page · distance"]
     end
 
-    DB -->|closest chunks + distances| A3
+    DB -->|closest and keyword-matching chunks + distances| A3
     A3 -.->|embed the question| OL
     A6 -.->|generate the answer| OL
 ```
@@ -72,12 +72,13 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 |---|---|---|
 | **Settings** | Reads `.env` / environment variables, applies defaults, rejects bad values with a clear message | `src/rag/config.py` |
 | **Service checks** | Before any work: is Ollama reachable, are the models installed, can we connect to the database? Prints one line per problem | `src/rag/health.py` |
-| **Providers** | The **only** place that creates the chat model, the embedding model and the vector store. Everything else uses LangChain's standard interfaces, so backends can be swapped here | `src/rag/providers.py` |
+| **Providers** | The **only** place that creates the chat model, the embedding model, the vector store (adding its full-text search column when hybrid search is on) and the keyword search. Everything else uses LangChain's standard interfaces, so backends can be swapped here | `src/rag/providers.py` |
 | **Database helpers** | Opens PostgreSQL connections (10 s timeout), converts the URL for the async driver, checks the table exists, lists indexed files (with their fingerprint and embedding model), counts and deletes one file's chunks | `src/rag/database.py` |
 | **Loaders** | Finds supported files and turns them into LangChain `Document`s with metadata from the folder path | `src/rag/ingestion/loaders.py` |
 | **Chunking** | Splits each file (all its pages as one text) into overlapping chunks that keep the metadata of the page they start on, each prefixed with its numbered section headings | `src/rag/ingestion/chunking.py` |
 | **Ingestion pipeline** | Decides per file: add, replace, skip or remove; stores chunks | `src/rag/ingestion/pipeline.py` |
-| **Retrieval** | Finds the closest chunks to a question, with optional product/version filter, and attaches each chunk's distance; can keep places for a preferred document type (release notes) | `src/rag/retrieval/search.py` |
+| **Retrieval** | Finds the best chunks for a question by vector search, merged with keyword search (hybrid, on by default), with optional product/version filter, and attaches each chunk's distance; can keep places for a preferred document type (release notes) | `src/rag/retrieval/search.py` |
+| **Keyword search** | PostgreSQL full-text search over the `chunks` table (generated `content_tsv` column, GIN index), ranked by how rare the matched words are; also returns each hit's cosine distance | `src/rag/retrieval/keyword.py` |
 | **Prompt** | The instructions to the model and the numbered, labelled context | `src/rag/generation/prompts.py` |
 | **Answer generation** | LCEL chain that sends the prompt to the chat model and returns plain text, whole or streamed | `src/rag/generation/llm.py` |
 | **Answer checks** | Repairs `[2], 4]`, drops citations of passages that don't exist (`[7]` of 5) and section numbers cited as passages (`[5.2.1.1]`), merges repeated citations (`[1][1]` → `[1]`) and recognises replies that aren't answers: only citations, or only "not stated in the passages" | `src/rag/generation/citations.py` |
@@ -195,6 +196,9 @@ There is **no separate embedding step in our code**: `store.add_documents(chunks
 | `source`, `file_hash`, `product`, `version`, `doc_type`, `embedding_model` | text | Metadata as real columns, so filters are plain SQL |
 | `page` | integer | PDF page number, empty for Markdown/text |
 | `langchain_metadata` | JSON | All metadata, including `chunk` |
+| `content_tsv` | tsvector | The text as full-text search words (`to_tsvector('english', content)`), a generated column PostgreSQL fills itself; GIN index `chunks_content_tsv_idx`. Only with hybrid search on |
+
+With `HYBRID_SEARCH` on, `get_vector_store()` also adds `content_tsv` and its index to a table that lacks them (`keyword.ensure_text_search()`), including one that already holds chunks: PostgreSQL computes the column for the existing rows, so nothing needs re-indexing. This needs the table's owner, not a superuser.
 
 The column list is defined once, in `METADATA_COLUMNS` in `providers.py`. Changing it (or switching to an embedding model with a different vector size) requires dropping the table and re-indexing; for the local database, `docker compose down -v` wipes everything.
 
@@ -204,12 +208,17 @@ The column list is defined once, in `METADATA_COLUMNS` in `providers.py`. Changi
 
 ### 6.1 Retrieve (`search.py`)
 
-`retrieve(store, question, k=5, version=None, product=None, prefer=None)`:
+`retrieve(store, question, k=5, version=None, product=None, prefer=None, hybrid=None)`:
 
-1. The question is embedded with the same `nomic-embed-text` model (inside `PGVectorStore`).
-2. PostgreSQL returns the `k` chunks with the smallest **cosine distance** to the question, optionally only those whose `version` and/or `product` match (both filters combined with AND).
+1. The question is embedded with the same `nomic-embed-text` model.
+2. PostgreSQL returns the chunks with the smallest **cosine distance** to the question, optionally only those whose `version` and/or `product` match (both filters combined with AND).
 3. Each returned chunk gets `metadata["distance"]`: 0 means the same meaning; larger means less related. On the sample data, chunks that answer the question scored about 0.27–0.45 and chunks for an unrelated question about 0.55–0.60, but chunks for an on-topic question the documents can't answer (single sign-on) scored 0.44–0.50, so a fixed cut-off would be hard to choose. No cut-off is applied yet; all `k` chunks are passed on.
-4. **Release notes kept in view.** Large guides can crowd short release notes out of the top `k`: with 25 pages of 23.4 release notes beside about 440 pages of guides, "Which PostgreSQL versions does Documentum support?" got five guide passages and a wrong answer, though the release notes state it. So the entry points call `service.find_passages()`, which passes a `Preference` built from the settings: `retrieve()` then fetches `4 × k` candidates and keeps up to `PREFERRED_DOC_TYPE_SLOTS` (default 2) of the `k` places for chunks whose `doc_type` is `PREFERRED_DOC_TYPE` (default `release-notes`), taking the closest such chunks that are at most `PREFERRED_DOC_TYPE_MAX_GAP` (default 0.15) further than the closest candidate, in place of the furthest others. Still `k` passages, closest first, and the filters are still SQL. Set `PREFERRED_DOC_TYPE` empty or the slots to 0 for the plain top `k`.
+4. **Hybrid search** (`HYBRID_SEARCH`, on by default). Vector search alone misses a fact stated in one sentence of a chunk about something else: in the 23.4 documents, the chunk saying DFS "is no longer installed with Documentum Server" ranked 85th of about 1,080 by distance for "Is DFS installed with Documentum Server?". It also misses exact terms such as issue IDs. So `service.find_passages()` passes a `Hybrid`, and `retrieve()` embeds the question once and runs two searches with the same filters, `4 × k` results each:
+   - the vector search above;
+   - a keyword search (`retrieval/keyword.py`): PostgreSQL full-text search on the generated `content_tsv` column (`english` configuration: stop words dropped, words stemmed, numbers and IDs such as "23.4" or "CS-139907" kept). Any of the question's words can match, and a chunk scores the sum of its matched words' rarity, `ln(1 + (N − n + 0.5) / (n + 0.5))` (N chunks searched, n of them with the word), so "DFS" or an issue ID counts for much more than "documentum". The same query returns each hit's cosine distance, so keyword-only hits have a real distance too.
+
+   `fuse()` merges the two rankings with **Reciprocal Rank Fusion**: a chunk scores `1 / (HYBRID_RRF_K + rank)` in each list it is in, best total first. `HYBRID_RRF_K` is 10 rather than the usual 60, because with lists of `4 × k` a value of 60 lets any chunk both searches found outrank the top hit of either search alone. `ask.py` shows for each source whether the vector search, the keyword search or both found it. Set `HYBRID_SEARCH=false` for vector search only. (`langchain-postgres` has its own hybrid search, but it matches only chunks containing every word of the question, replaces the distance with the fusion score, and keeps the first question's words for later searches, so we use our own query.)
+5. **Release notes kept in view.** Large guides can crowd short release notes out of the top `k`: with 25 pages of 23.4 release notes beside about 440 pages of guides, "Which PostgreSQL versions does Documentum support?" got five guide passages and a wrong answer, though the release notes state it. So the entry points call `service.find_passages()`, which passes a `Preference` built from the settings: `retrieve()` then fetches `4 × k` candidates and keeps up to `PREFERRED_DOC_TYPE_SLOTS` (default 2) of the `k` places for chunks whose `doc_type` is `PREFERRED_DOC_TYPE` (default `release-notes`), taking the best such candidates (after fusion, with hybrid search) that are at most `PREFERRED_DOC_TYPE_MAX_GAP` (default 0.15) further than the closest candidate, in place of the last others. Still `k` passages in candidate order (closest first, or fused order with hybrid search), and the filters are still SQL. Set `PREFERRED_DOC_TYPE` empty or the slots to 0 for the plain top `k`.
 
 ### 6.2 Build the prompt (`prompts.py`)
 
@@ -248,8 +257,8 @@ After the answer, `ask.py` prints a **Sources** list: one line per retrieved chu
 Token authentication replaces basic authentication [1].
 
 Sources:
-  [1] acme-dms/1.0/deprecated-features/deprecated-features.md, version 1.0  (distance 0.346)
-  [2] acme-dms/1.0/release-notes/release-notes.md, version 1.0  (distance 0.506)
+  [1] acme-dms/1.0/deprecated-features/deprecated-features.md, version 1.0  (distance 0.346, found by both)
+  [2] acme-dms/1.0/release-notes/release-notes.md, version 1.0  (distance 0.506, found by vector)
 ```
 
 Before that, `ask.py` applies the same checks as `answer()`: a streamed reply that is only a citation, or only says the passages don't state the answer, is replaced by the "I don't know" reply. (Citations are not tidied here, because the text is already printed as it streams.) The list is hidden when the answer is the "I don't know" reply; that rule lives in `service.sources_to_show()`, so `POST /chat` applies it too. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
@@ -603,7 +612,8 @@ RAG/
 │   │   ├── chunking.py      # Documents → chunks
 │   │   └── pipeline.py      # add / update / skip / remove
 │   ├── retrieval/
-│   │   └── search.py        # retrieve() with filters + distance
+│   │   ├── search.py        # retrieve(): filters, distance, hybrid fusion, release-notes places
+│   │   └── keyword.py       # full-text (keyword) search; its generated column and index
 │   └── generation/
 │       ├── prompts.py       # ANSWER_PROMPT, format_context, source_label
 │       ├── llm.py           # LCEL chain, answer(), stream_answer()
@@ -629,10 +639,10 @@ RAG/
 - **API features:** no authentication, no streaming `/chat` (the whole answer arrives at once), no way to cancel an ingestion job.
 - **Database migrations:** the `chunks` and `documents` tables are created by the app on first use; there is no schema file or migration tool.
 - **Document library features:** one file per upload, no upload progress, no replacing a document in place (delete it, then upload again), no editing of product, version or type, and no versions, approvals, check-in/check-out or permissions.
-- **Reranking:** retrieved chunks are used in distance order as returned.
+- **Reranking:** retrieved chunks are used in the order retrieval returns them (distance, or fused vector + keyword rank); no cross-encoder reranker.
 - **Providers:** only Ollama (models) and pgvector (storage); no Azure or other providers.
 - **File types:** only PDF, Markdown and text. No Word, Excel, PowerPoint or HTML; no OCR for scanned PDFs.
-- **Search:** vector search only. No keyword/full-text search, no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents).
+- **Search:** no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents). The keyword search has no synonyms: "PostgreSQL" in a question doesn't match "Postgres" in the documents (the vector search still may).
 - **Smarter chunking:** no splitting by Markdown headings; tables in PDFs come out as plain text in reading order.
 - **Product features:** no dedicated release-notes view, user accounts or permissions. The web app's Release notes screen places version-scoped questions in Chat instead.
 - **Deployment:** runs only on a developer machine; no server deployment, no production server settings for uvicorn.

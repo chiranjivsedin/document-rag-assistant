@@ -9,7 +9,7 @@ Built with LangChain, local Ollama models, PostgreSQL with pgvector, a FastAPI H
 A **local prototype**, tested on a developer laptop with fictional sample documents.
 
 - **Pending:** deployment to Azure, and validation against real **version 16.2** documents (none have been indexed or tested yet).
-- **Not built yet:** the release-notes / deprecated-features view, user login, Azure model providers, keyword search, and a relevance cut-off. Scanned PDFs (no text layer) and Word files are not supported.
+- **Not built yet:** the release-notes / deprecated-features view, user login, Azure model providers, and a relevance cut-off. Scanned PDFs (no text layer) and Word files are not supported.
 - **Answers are slow on a laptop CPU** with the default model: about 20–65 seconds when a question needs new passages, a few seconds when it reuses the previous question's passages, and 15–30 seconds more when the model first has to load.
 
 ## Features

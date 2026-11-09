@@ -16,8 +16,8 @@ from rag.database import indexed_files
 from rag.generation.llm import Answer, answer
 from rag.generation.prompts import NO_ANSWER
 from rag.ingestion.pipeline import IngestReport, ingest
-from rag.providers import get_chat_model, get_embeddings, get_vector_store
-from rag.retrieval.search import Preference, retrieve
+from rag.providers import get_chat_model, get_embeddings, get_keyword_search, get_vector_store
+from rag.retrieval.search import Hybrid, KeywordSearch, Preference, retrieve
 
 
 @dataclass(frozen=True)
@@ -25,13 +25,16 @@ class Services:
     settings: Settings
     store: VectorStore
     chat_model: BaseChatModel | None  # None when built only for ingesting
+    keyword_search: KeywordSearch | None = None  # None = vector search only (HYBRID_SEARCH off)
 
 
 def build_services(settings: Settings, with_chat_model: bool = True) -> Services:
-    """Connect to the vector store (creating its table on first use) and set up the chat model."""
+    """Connect to the vector store (creating its table on first use) and set up the chat model and, with
+    HYBRID_SEARCH, the keyword search."""
     store = get_vector_store(settings, get_embeddings(settings))
     chat_model = get_chat_model(settings) if with_chat_model else None
-    return Services(settings=settings, store=store, chat_model=chat_model)
+    return Services(settings=settings, store=store, chat_model=chat_model,
+                    keyword_search=get_keyword_search(settings))
 
 
 def run_ingest(services: Services, documents_dir: Path) -> IngestReport:
@@ -63,13 +66,17 @@ def find_passages(
     version: str | None = None,
     product: str | None = None,
 ) -> list[Document]:
-    """The k passages to answer from, closest first, with the configured document-type preference applied."""
+    """The k passages to answer from, best first: vector search, merged with keyword search when HYBRID_SEARCH is
+    on, then the configured document-type preference."""
     settings = services.settings
     prefer = None
     if settings.preferred_doc_type and settings.preferred_doc_type_slots > 0:
         prefer = Preference(settings.preferred_doc_type, settings.preferred_doc_type_slots,
                             settings.preferred_doc_type_max_gap)
-    return retrieve(services.store, question, k=k, version=version, product=product, prefer=prefer)
+    hybrid = None
+    if settings.hybrid_search and services.keyword_search is not None:
+        hybrid = Hybrid(services.keyword_search, settings.hybrid_rrf_k)
+    return retrieve(services.store, question, k=k, version=version, product=product, prefer=prefer, hybrid=hybrid)
 
 
 def sources_to_show(answer_text: str, docs: list[Document]) -> list[Document]:

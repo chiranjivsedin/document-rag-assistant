@@ -67,3 +67,38 @@ def test_error_groups_cover_the_backends_failures():
     assert isinstance(ollama.ResponseError("out of memory", 500), model_errors())
     assert isinstance(httpx.ReadTimeout("slow"), model_errors())
     assert not isinstance(ollama.ResponseError("x"), unavailable)
+
+
+def test_keyword_search_is_bound_to_the_database_and_table():
+    from rag import providers
+    from rag.providers import METADATA_COLUMNS, get_keyword_search
+
+    settings = get_settings({"DATABASE_URL": "postgresql://u:p@127.0.0.1:5433/rag", "VECTOR_TABLE": "chunks"})
+    search = get_keyword_search(settings)
+    assert search.func is providers.keyword_search
+    assert search.args == ("postgresql://u:p@127.0.0.1:5433/rag", "chunks", list(METADATA_COLUMNS))
+
+
+def test_no_keyword_search_when_hybrid_search_is_off():
+    from rag.providers import get_keyword_search
+
+    assert get_keyword_search(get_settings({"HYBRID_SEARCH": "false"})) is None
+    with pytest.raises(ValueError, match="DATABASE_URL is required"):
+        get_keyword_search(get_settings({}))
+
+
+@pytest.mark.parametrize(("hybrid", "ensured"), [("true", [("postgresql://u:p@127.0.0.1:5433/rag", "chunks")]),
+                                                 ("false", [])])
+def test_vector_store_adds_the_keyword_search_column_only_with_hybrid_search(monkeypatch, hybrid, ensured):
+    import langchain_postgres
+
+    from rag import providers
+
+    calls = []
+    monkeypatch.setattr(providers, "table_exists", lambda url, table: True)  # an existing table, maybe without it
+    monkeypatch.setattr(providers, "ensure_text_search", lambda url, table: calls.append((url, table)))
+    monkeypatch.setattr(langchain_postgres.PGEngine, "from_connection_string", staticmethod(lambda url: "engine"))
+    monkeypatch.setattr(langchain_postgres.PGVectorStore, "create_sync", staticmethod(lambda **kwargs: "store"))
+    settings = get_settings({"DATABASE_URL": "postgresql://u:p@127.0.0.1:5433/rag", "HYBRID_SEARCH": hybrid})
+    assert get_vector_store(settings, embeddings=None) == "store"
+    assert calls == ensured

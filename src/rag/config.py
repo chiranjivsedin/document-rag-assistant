@@ -25,6 +25,10 @@ class Settings:
     preferred_doc_type: str | None
     preferred_doc_type_slots: int
     preferred_doc_type_max_gap: float
+    # Hybrid retrieval: also search the chunks by keyword (PostgreSQL full-text search) and merge both rankings
+    # with Reciprocal Rank Fusion, a passage scoring 1 / (hybrid_rrf_k + its rank) per list (retrieval.search.fuse).
+    hybrid_search: bool
+    hybrid_rrf_k: int
     documents_dir: str
     max_upload_mb: int  # largest file the document library accepts
     database_url: str | None
@@ -52,6 +56,8 @@ def get_settings(env: Mapping[str, str] | None = None) -> Settings:
         preferred_doc_type=env.get("PREFERRED_DOC_TYPE", "release-notes").strip() or None,
         preferred_doc_type_slots=_int(env, "PREFERRED_DOC_TYPE_SLOTS", 2),
         preferred_doc_type_max_gap=_float(env, "PREFERRED_DOC_TYPE_MAX_GAP", 0.15),
+        hybrid_search=_bool(env, "HYBRID_SEARCH", True),
+        hybrid_rrf_k=_int(env, "HYBRID_RRF_K", 10),
         documents_dir=env.get("DOCUMENTS_DIR", "documents"),
         max_upload_mb=_int(env, "MAX_UPLOAD_MB", 50),
         database_url=env.get("DATABASE_URL") or None,
@@ -84,6 +90,17 @@ def _float(env: Mapping[str, str], name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number, got {raw!r}") from None
 
 
+def _bool(env: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = (env.get(name) or "").strip().lower()
+    if raw == "":
+        return default
+    if raw in ("true", "1", "yes", "on"):
+        return True
+    if raw in ("false", "0", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be true or false, got {env.get(name)!r}")
+
+
 def _list(raw: str) -> tuple[str, ...]:
     """Comma-separated values, trimmed, empty items dropped."""
     return tuple(item.strip() for item in raw.split(",") if item.strip())
@@ -109,5 +126,7 @@ def _validate(s: Settings) -> None:
         raise ValueError("PREFERRED_DOC_TYPE_SLOTS must be 0 (off) or more")
     if not 0 <= s.preferred_doc_type_max_gap <= 2:
         raise ValueError("PREFERRED_DOC_TYPE_MAX_GAP must be a cosine distance from 0 to 2")
+    if s.hybrid_rrf_k < 0:
+        raise ValueError("HYBRID_RRF_K must be 0 or more")
     if s.max_upload_mb <= 0:
         raise ValueError("MAX_UPLOAD_MB must be greater than 0")

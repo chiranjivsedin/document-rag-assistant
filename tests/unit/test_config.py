@@ -118,3 +118,25 @@ def test_preferred_doc_type_defaults_and_overrides():
 def test_invalid_preferred_doc_type_settings(env, message):
     with pytest.raises(ValueError, match=message):
         get_settings(env)
+
+
+def test_hybrid_search_is_on_by_default():
+    s = get_settings({})
+    assert (s.hybrid_search, s.hybrid_rrf_k) == (True, 10)
+    assert get_settings({"HYBRID_RRF_K": "60"}).hybrid_rrf_k == 60
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("false", False), (" FALSE ", False), ("0", False), ("no", False),
+                                               ("off", False), ("true", True), ("1", True), ("Yes", True), ("", True)])
+def test_hybrid_search_switch(raw, expected):
+    assert get_settings({"HYBRID_SEARCH": raw}).hybrid_search is expected
+
+
+@pytest.mark.parametrize(("env", "message"), [
+    ({"HYBRID_SEARCH": "maybe"}, "HYBRID_SEARCH must be true or false"),
+    ({"HYBRID_RRF_K": "-1"}, "HYBRID_RRF_K must be 0 or more"),
+    ({"HYBRID_RRF_K": "ten"}, "HYBRID_RRF_K must be a whole number"),
+])
+def test_invalid_hybrid_settings(env, message):
+    with pytest.raises(ValueError, match=message):
+        get_settings(env)

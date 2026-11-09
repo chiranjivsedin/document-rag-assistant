@@ -5,12 +5,16 @@ LangChain's standard interfaces, so switching to Azure later means adding
 a branch here, not changing callers.
 """
 
+from functools import partial
+
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
 from rag.config import Settings
 from rag.database import async_database_url, table_exists
+from rag.retrieval.keyword import ensure_text_search, keyword_search
+from rag.retrieval.search import KeywordSearch
 
 # Chunk metadata kept as real table columns, so retrieval can filter on them in SQL.
 METADATA_COLUMNS = {
@@ -51,9 +55,22 @@ def _keep_alive_seconds(settings: Settings) -> int:
 
 
 def get_vector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
-    """Connect to the vector store, creating its table on first use."""
+    """Connect to the vector store, creating its table on first use (and, with HYBRID_SEARCH, its full-text search
+    column and index, added to an existing table too)."""
     if settings.vector_store == "pgvector":
         return _pgvector_store(settings, embeddings)
+    raise ValueError(f"Unsupported vector store: {settings.vector_store!r}")
+
+
+def get_keyword_search(settings: Settings) -> KeywordSearch | None:
+    """The keyword half of hybrid retrieval, or None when HYBRID_SEARCH is off. Call get_vector_store() first: it
+    adds the column this searches."""
+    if not settings.hybrid_search:
+        return None
+    if settings.vector_store == "pgvector":
+        if not settings.database_url:
+            raise ValueError("DATABASE_URL is required when VECTOR_STORE is pgvector")
+        return partial(keyword_search, settings.database_url, settings.vector_table, list(METADATA_COLUMNS))
     raise ValueError(f"Unsupported vector store: {settings.vector_store!r}")
 
 
@@ -87,6 +104,8 @@ def _pgvector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
             vector_size=len(embeddings.embed_query("dimension probe")),
             metadata_columns=[Column(name, sql_type) for name, sql_type in METADATA_COLUMNS.items()],
         )
+    if settings.hybrid_search:
+        ensure_text_search(settings.database_url, settings.vector_table)
     return PGVectorStore.create_sync(
         engine=engine,
         embedding_service=embeddings,
