@@ -1,5 +1,6 @@
 """Generate an answer from retrieved chunks with the chat model."""
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -27,7 +28,11 @@ def answer(question: str, docs: list[Document], chat_model: BaseChatModel) -> An
     """Answer from the given passages only; with no passages, say so without calling the model."""
     if not docs:
         return Answer(text=NO_ANSWER, sources=[])
-    text = tidy_citations(answer_chain(chat_model).invoke(_inputs(question, docs)).strip())
+    text = tidy_citations(answer_chain(chat_model).invoke(_inputs(question, docs)), len(docs)).strip()
+    # gemma3:4b sometimes ends a real answer with the fixed reply ("... [2]. I don't know based on the available
+    # documents."). Left in, the API would report no_answer and hide the sources, so it goes; a reply that is
+    # only the fixed reply ends up empty and comes back below.
+    text = re.sub(rf"[ \t]*{re.escape(NO_ANSWER)}", "", text).strip()
     if has_no_words(text) or only_says_not_stated(text):  # just "[1]", or "X is not stated in the passages [1]."
         text = NO_ANSWER
     return Answer(text=text, sources=docs)

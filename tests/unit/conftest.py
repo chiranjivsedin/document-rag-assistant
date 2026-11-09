@@ -140,8 +140,8 @@ class FakeIndex:
         return IndexAccess(
             delete_chunks=self.delete_chunks,
             count_chunks=lambda sources: {s: self.chunks[s][1] for s in sources if s in self.chunks},
-            indexed_files=lambda: {s: (h, "nomic-embed-text") for s, (h, _) in self.chunks.items()},
-            embedding_model="nomic-embed-text",
+            indexed_files=lambda: {s: (h, "nomic-embed-text;chunks=v2/1000/150") for s, (h, _) in self.chunks.items()},
+            fingerprint="nomic-embed-text;chunks=v2/1000/150",
         )
 
 

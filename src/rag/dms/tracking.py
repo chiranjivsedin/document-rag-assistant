@@ -46,8 +46,8 @@ class IndexingTracker:
 
     def adopt_untracked(self) -> int:
         """Record supported files in the documents folder that aren't tracked yet, where they are: indexed if
-        the index already holds this exact file (same content and embedding model), otherwise pending (the
-        next run indexes them). Returns how many were adopted."""
+        the index already holds this exact file (same content, embedding model and chunking), otherwise pending
+        (the next run indexes them). Returns how many were adopted."""
         tracked = {document.source for document in self.repository.list_all()}
         new_documents = [new for path in iter_files(self.documents_dir)
                          if (new := self._untracked(path, tracked)) is not None]
@@ -55,7 +55,7 @@ class IndexingTracker:
             return 0
         indexed = self.index.indexed_files()
         current = [new.source for new in new_documents
-                   if indexed.get(new.source) == (new.file_hash, self.index.embedding_model)]
+                   if indexed.get(new.source) == (new.file_hash, self.index.fingerprint)]
         counts = self.index.count_chunks(current) if current else {}
         adopted = 0
         for new in new_documents:

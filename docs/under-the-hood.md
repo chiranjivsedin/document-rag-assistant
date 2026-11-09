@@ -8,10 +8,10 @@ To run it, see [run-locally-windows.md](run-locally-windows.md). For the overall
 
 | File | What it does |
 |---|---|
-| `src/rag/config.py` | `get_settings()` reads `.env` into a frozen `Settings` object (model names, Ollama URL and keep-alive time, chunk size, database URL, table name, upload size limit). It fills in defaults and rejects bad values early, such as an overlap bigger than the chunk size or an unsupported provider. Nothing else reads environment variables. |
+| `src/rag/config.py` | `get_settings()` reads `.env` into a frozen `Settings` object (model names, Ollama URL and keep-alive time, chunk size, the retrieval preference for release notes, database URL, table name, upload size limit). It fills in defaults and rejects bad values early, such as an overlap bigger than the chunk size or an unsupported provider. Nothing else reads environment variables. |
 | `src/rag/health.py` | `check_services()` runs before any real work. It asks Ollama's `/api/tags` whether it is up and has the models, and opens a test database connection. It returns plain-English problems; the scripts print them and exit, and the API returns them with status 503. |
 | `src/rag/providers.py` | The only file that knows the backends are Ollama and pgvector. It returns a chat model (`ChatOllama`, temperature 0), embeddings (`OllamaEmbeddings`) and the vector store (`PGVectorStore`). Both models send a keep-alive time with every call (`OLLAMA_KEEP_ALIVE_MINUTES`, default 30), so Ollama keeps them loaded between questions instead of unloading them after its default 5 idle minutes; reloading the chat model costs 15–30 s. On first use it creates the `chunks` table, sizing the vector column by embedding a test string and counting the numbers (768). `METADATA_COLUMNS` defines which metadata become real SQL columns: source, file_hash, product, version, doc_type, page, embedding_model. `unavailable_errors()` and `model_errors()` list the backend exceptions that mean "couldn't reach Ollama or the database" and "the model returned an error"; the API uses them to choose 503 or 502. |
-| `src/rag/service.py` | The glue every entry point shares, so scripts and API don't each repeat it. `build_services()` creates the vector store and chat model once (a `Services` object). `run_ingest()` looks up what is already stored and runs `ingest()`. `ask()` retrieves, answers and returns the sources to show. `sources_to_show()` holds the rule "no sources when the answer is 'I don't know'". |
+| `src/rag/service.py` | The glue every entry point shares, so scripts and API don't each repeat it. `build_services()` creates the vector store and chat model once (a `Services` object). `run_ingest()` looks up what is already stored and runs `ingest()`. `find_passages()` retrieves with the configured document-type preference; `ask()` uses it, answers and returns the sources to show. `sources_to_show()` holds the rule "no sources when the answer is 'I don't know'". |
 | `src/rag/database.py` | Plain SQL helpers that sit beside LangChain: open a connection (10 s timeout), convert the URL to the `postgresql+asyncpg://` form the vector store needs, check whether a table exists, and `indexed_files()`, which lists what is already stored. For the document library it also has `chunk_counts()` (passages per file) and `delete_chunks()` (one file's passages), which work without Ollama. |
 
 ## Workflow 1: Ingestion (`scripts/ingest.py`)
@@ -48,13 +48,15 @@ It parses `--documents-dir`, checks the folder exists and runs the health check.
   - `file_hash` is a SHA-256 hash of the bytes, used to detect changes.
   - `product`, `version` and `doc_type` come from the three folder levels. A missing level becomes `None`.
 - `load_file()` returns LangChain `Document`s:
-  - **PDF:** one per page, read with `pypdf`, with a `page` number. Pages without extractable text (scans) are dropped.
+  - **PDF:** one per page, read with `pypdf`, with a `page` number. Pages without extractable text (scans) are dropped. `drop_running_headers()` removes running headers and footers such as "Documentum Server 23.4 Release Notes  3": a line among the first or last three text lines of a page whose wording, ignoring a page number at its start or end, sits at a page edge on at least a third of the pages (and at least three).
   - **Markdown or text:** the whole file as one Document, with `page` set to `None`.
 
 ### `ingestion/chunking.py`: cuts text into bite-sized pieces
 
 - `split_documents()` uses LangChain's `RecursiveCharacterTextSplitter`. It tries to split on paragraphs, then lines, then words, keeping chunks within 1000 characters with 150 characters of overlap. The overlap means a sentence on a boundary isn't lost.
-- Each chunk inherits its page's metadata and gets a `chunk` number.
+- All pages of a file are cut as **one text**, joined by a line break, so a page break is no stronger a split point than a line. Release notes often end a page with a heading and its intro ("2.1 New features / … includes the following new features.") and put the list on the next page; per-page chunks kept the two apart, and the list was never retrieved.
+- Each chunk inherits the metadata of the page it **starts** on (so `page` is where the passage begins; it may run onto the next page) and gets a `chunk` number, counted through the whole file.
+- Each chunk starts with the numbered section headings it falls under, e.g. `Section: 2 About Documentum Server 23.4 > 2.1 New features`, so a chunk from the middle of a section (a table at the top of the next page, say) still says what it is about, to the embedding and to the model. `find_headings()` and `is_heading()` are deliberately strict: a line of its own like `2.1.1 Title` (numbers of one or two digits, a capitalised title containing a lowercase letter, not ending in `.`, `,`, `;` or `:`); no number part 0 (rules out version-matrix rows such as `7.0 N Y Y`); a single-number heading must continue the numbering after the previous heading (rules out table rows such as `16 Superuser …`); nothing on a table-of-contents page (three or more dot-leader lines). Files without numbered headings get no prefix.
 
 ### `ingestion/pipeline.py`: decides what to do with each file
 
@@ -62,11 +64,13 @@ It parses `--documents-dir`, checks the folder exists and runs the health check.
 
 | Situation | Action |
 |---|---|
-| Same hash and same embedding model | Skip (that's why re-runs are fast) |
+| Same hash and same fingerprint | Skip (that's why re-runs are fast) |
 | New file | Load → chunk → `store.add_documents()` |
-| Changed file, or embedding model changed | Delete its old chunks, then add new ones |
+| Changed file, or fingerprint changed | Delete its old chunks, then add new ones |
 | No text at all (e.g. scanned PDF) | Old chunks removed, nothing added, reported as "no text" |
 | In the database but no longer on disk | Delete its chunks |
+
+The fingerprint, `index_fingerprint()`, is what each chunk stores in its `embedding_model` column: the embedding model plus how the text was cut, e.g. `nomic-embed-text;chunks=v2/1000/150` (`CHUNKING_VERSION`, `CHUNK_SIZE`, `CHUNK_OVERLAP`). Changing the model, the chunk settings or the chunking code (bump `CHUNKING_VERSION`) therefore re-processes every file once on the next ingest run, with no table change. Chunks stored before the fingerprint existed hold just the model name, so the first run after upgrading re-processes everything.
 
 The actual embedding is hidden inside `store.add_documents()`. `PGVectorStore` sends each chunk's text to `nomic-embed-text` through Ollama, gets back 768 numbers, and inserts a row. That row holds the text, the vector, the metadata columns, and a JSON column (`langchain_metadata`) for leftover metadata such as `chunk`.
 
@@ -81,7 +85,7 @@ ask.py "question" --version 1.0
  ├─ build_services()                        service.py
  │    ├─ get_vector_store(get_embeddings()) providers.py
  │    └─ get_chat_model()                   providers.py
- ├─ retrieve()                              retrieval/search.py   → top k chunks
+ ├─ find_passages() → retrieve()            service.py, retrieval/search.py → k chunks
  ├─ stream_answer()                         generation/llm.py
  │    ├─ format_context()                   generation/prompts.py → numbered passages
  │    └─ ANSWER_PROMPT | chat model | StrOutputParser   (LCEL chain)
@@ -92,7 +96,7 @@ ask.py "question" --version 1.0
 
 ### `scripts/ask.py`: the entry point
 
-It parses the question and `--version`, `--product` and `--k`, then runs the health check for both models. It gets the store and chat model from `build_services()`, prints the answer piece by piece as it streams, then lists the sources with their distance scores and the time taken. (It streams, so it calls `retrieve()` and `stream_answer()` itself; the API's non-streaming path goes through `service.ask()`, which does the same retrieve-then-answer with `answer()`.)
+It parses the question and `--version`, `--product` and `--k`, then runs the health check for both models. It gets the store and chat model from `build_services()`, prints the answer piece by piece as it streams, then lists the sources with their distance scores and the time taken. (It streams, so it calls `find_passages()` and `stream_answer()` itself; the API's non-streaming path goes through `service.ask()`, which does the same retrieve-then-answer with `answer()`.)
 
 ### `retrieval/search.py`: finds the relevant chunks
 
@@ -100,6 +104,7 @@ It parses the question and `--version`, `--product` and `--k`, then runs the hea
   - It filters by the `version` and `product` columns if you gave them.
   - It orders by cosine distance and takes the top `k` (default 5).
 - Each result gets `metadata["distance"]`: 0 means the same meaning, and larger means less related.
+- With a `Preference` (which `service.find_passages()` builds from the settings), it fetches `4 × k` candidates and `choose()` keeps up to `PREFERRED_DOC_TYPE_SLOTS` (default 2) of the `k` places for chunks of `PREFERRED_DOC_TYPE` (default `release-notes`): if fewer are already in the top `k`, the closest further ones of that type replace the furthest others, but only those at most `PREFERRED_DOC_TYPE_MAX_GAP` (default 0.15) further from the question than the closest candidate. The result is still `k` passages, closest first. Why: the 23.4 folder held 25 pages of release notes beside about 440 pages of guides, and for "Which PostgreSQL versions does Documentum support?" all five passages came from the guides while the answer was in the release notes. An empty `PREFERRED_DOC_TYPE` or 0 slots gives the plain top `k`.
 
 ### `generation/prompts.py`: what the model is told
 
@@ -124,11 +129,11 @@ It parses the question and `--version`, `--product` and `--k`, then runs the hea
 
 Small, model-independent checks, so a quirk of the model doesn't reach the user:
 
-- `tidy_citations()` merges a number repeated in one place: `[1][1]`, `[1] [1]` and `[1, 1]` become `[1]`. It never changes the words, and it leaves ranges such as `[1-3]` as written.
+- `tidy_citations(text, passages)` first repairs the one broken shape seen live, `[2], 4]` → `[2, 4]`; then, given the number of passages, drops citation numbers that match no passage (`[7]` with 5 passages; a range is cut to fit, `[4-8]` → `[4-5]`; a group left empty goes, with the spaces before it) and section numbers in citation brackets (`[5.2.1.1]`: gemma3:4b copies them from the chunks' `Section:` lines); then merges a number repeated in one place: `[1][1]`, `[1] [1]` and `[1, 1]` become `[1]`. It never changes the words or renumbers a citation, and leaves valid ranges such as `[1-3]` as written. An answer left with no citation is still an answer, as before; one left with no words becomes `NO_ANSWER` (below).
 - `has_no_words()` is true for a reply that is empty or only citations and punctuation, such as `[1]`.
 - `only_says_not_stated()` is true when every sentence only says the documents lack the answer, e.g. "The release date of 2.0 is not stated in the passages [1]." It needs both a phrase such as "is not stated / mentioned / specified" or "no information" and a mention of the passages or documents, so a product fact like "is not supported in 2.0" still counts as an answer. English wording only.
 
-`answer()` applies `tidy_citations()`, then replaces the reply with `NO_ANSWER` if either of the other two checks is true. That keeps `no_answer` in `/chat`, and the hidden source list, working when the model words "I don't know" its own way.
+`answer()` applies `tidy_citations()` with the number of passages, removes `NO_ANSWER` where the model tacked it onto a real answer ("... [2]. I don't know based on the available documents.", which would otherwise set `no_answer` and hide the sources), then replaces the reply with `NO_ANSWER` if either of the other two checks is true. That keeps `no_answer` in `/chat`, and the hidden source list, working when the model words "I don't know" its own way.
 
 ### Back in `ask.py`
 
@@ -149,7 +154,7 @@ POST /chat  {"question", "product"?, "version"?, "k"?}
  ├─ ChatRequest validation                      api/schemas.py   → 422 if invalid
  ├─ check_services(need_chat_model=True)        health.py        → 503 if a problem
  ├─ get_services()                              api/app.py   → build_services() on first use, then reused
- ├─ ask()                                       service.py   → retrieve() + answer() (with citations.py checks) + sources_to_show()
+ ├─ ask()                                       service.py   → find_passages() + answer() (with citations.py checks) + sources_to_show()
  └─ ChatResponse: answer, no_answer, numbered sources with excerpt
 
 POST /documents/ingest  (no body)
@@ -241,13 +246,13 @@ An ingestion job (any trigger): IndexingTracker.run()   dms/tracking.py
 
 ### `dms/index.py` and `api/documents.py`
 
-- `IndexAccess` bundles the three things the library needs from the `chunks` table (delete one file's chunks, count chunks per file, list indexed files) and the current embedding model. In the app they are `database.py` helpers; in tests, fakes.
+- `IndexAccess` bundles the three things the library needs from the `chunks` table (delete one file's chunks, count chunks per file, list indexed files) and the current `index_fingerprint()`. In the app they are `database.py` helpers; in tests, fakes.
 - `api/documents.py` holds the `/documents` endpoints and `UploadSizeLimit`, an ASGI middleware that caps the upload body: it refuses an oversized `Content-Length` before reading, and counts the bytes of every upload as they arrive, stopping with 413 once past the limit. This is needed because the form parser saves uploaded files to a temporary file, with no limit of its own, before the endpoint runs. Unsafe paths become a clear 500; a delete that stopped part-way returns what was done.
 
 ## Things worth knowing
 
-- **Same embedding model on both sides.** Questions and chunks must be embedded by the same model, or the distances are meaningless. That's why `embedding_model` is stored on every row, and why changing it makes ingest redo every file.
-- **LangChain stays inside `src/rag/`.** The scripts and the API only call our own functions (`build_services()`, `run_ingest()`, `ask()`, `retrieve()`, `stream_answer()`), and the tests swap in fake stores and models.
-- **No relevance cut-off.** You always get the top `k` chunks, even if they are weakly related. The prompt is the only guard against made-up answers; the checks in `citations.py` only catch replies that aren't answers, not wrong ones.
+- **Same embedding model on both sides.** Questions and chunks must be embedded by the same model, or the distances are meaningless. That's why the `embedding_model` column (the model plus the chunking, see `index_fingerprint()`) is stored on every row, and why changing it makes ingest redo every file.
+- **LangChain stays inside `src/rag/`.** The scripts and the API only call our own functions (`build_services()`, `run_ingest()`, `ask()`, `find_passages()`, `stream_answer()`), and the tests swap in fake stores and models.
+- **No relevance cut-off.** You always get `k` chunks (the closest, with release notes kept in view), even if they are weakly related. The prompt is the only guard against made-up answers; the checks in `citations.py` only catch replies that aren't answers, not wrong ones.
 - **Two database clients.** `PGVectorStore` uses asyncpg; `database.py` and the document library use psycopg for the small direct queries the vector store doesn't offer, such as "which files are stored, with which hash".
 - **The library and the index meet only at `source`.** A `documents` row and a file's chunks share the same `source` path; there is no foreign key, and the library changes the `chunks` table only to delete one document's chunks.

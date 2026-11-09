@@ -169,7 +169,8 @@ def test_chat_returns_answer_and_numbered_sources(checks):
         {"number": 2, "source": "acme/1.0/release-notes/notes.md", "product": "acme", "version": "1.0",
          "doc_type": "release-notes", "page": None, "distance": 0.4, "excerpt": "Use Acme Web instead."},
     ]
-    assert store.searches == [{"query": "What is deprecated?", "k": 5, "filter": None}]
+    # 4 candidates per passage, to keep places for release notes (PREFERRED_DOC_TYPE); 5 passages are returned
+    assert store.searches == [{"query": "What is deprecated?", "k": 20, "filter": None}]
     assert checks.calls == [(SETTINGS, True)]
 
 
@@ -178,8 +179,8 @@ def test_chat_passes_filters_and_k(checks):
     response = client.post("/chat", json={"question": "  What is deprecated?  ", "product": " acme ",
                                           "version": "1.0", "k": 1})
     assert response.status_code == 200
-    assert store.searches == [{"query": "What is deprecated?", "k": 1, "filter": {"version": "1.0", "product": "acme"}}]
-    assert len(response.json()["sources"]) == 1
+    assert store.searches == [{"query": "What is deprecated?", "k": 4, "filter": {"version": "1.0", "product": "acme"}}]
+    assert len(response.json()["sources"]) == 1  # k is still the number of sources
 
 
 def test_chat_empty_filters_mean_no_filter(checks):

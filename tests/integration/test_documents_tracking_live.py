@@ -24,7 +24,7 @@ from rag.dms.repository import DocumentRepository
 from rag.dms.storage import DocumentStorage
 from rag.dms.tracking import NO_TEXT
 from rag.ingestion.loaders import file_metadata, iter_files
-from rag.ingestion.pipeline import IngestReport
+from rag.ingestion.pipeline import IngestReport, index_fingerprint
 from rag.service import Services
 
 pytestmark = pytest.mark.integration
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.integration
 LOCAL_DB = "postgresql://rag:rag_local_dev@127.0.0.1:5433/rag"
 DOCUMENTS_TABLE = "it_track_documents"
 CHUNKS_TABLE = "it_track_chunks"
-MODEL = "nomic-embed-text"
+FINGERPRINT = index_fingerprint(get_settings({}))  # what the real pipeline stores as embedding_model
 FORM = {"product": "acme", "version": "1.0", "doc_type": "notes"}
 
 
@@ -71,7 +71,7 @@ class SqlPipeline:
                 source = meta["source"]
                 on_disk.add(source)
                 previous = indexed.get(source)
-                if previous == (meta["file_hash"], MODEL):
+                if previous == (meta["file_hash"], FINGERPRINT):
                     report.unchanged.append(source)
                     continue
                 conn.execute(f"DELETE FROM {CHUNKS_TABLE} WHERE source = %s", (source,))
@@ -80,7 +80,7 @@ class SqlPipeline:
                     continue
                 for _ in range(2):
                     conn.execute(f"INSERT INTO {CHUNKS_TABLE} (source, file_hash, embedding_model) VALUES (%s, %s, %s)",
-                                 (source, meta["file_hash"], MODEL))
+                                 (source, meta["file_hash"], FINGERPRINT))
                 (report.updated if previous else report.added).append(source)
             for source in sorted(set(indexed) - on_disk):
                 conn.execute(f"DELETE FROM {CHUNKS_TABLE} WHERE source = %s", (source,))
@@ -150,7 +150,7 @@ def test_adopting_existing_files_uses_the_real_index(setup, db_url, tmp_path):
     with psycopg.connect(db_url) as conn:
         for _ in range(3):
             conn.execute(f"INSERT INTO {CHUNKS_TABLE} (source, file_hash, embedding_model) VALUES (%s, %s, %s)",
-                         (meta["source"], meta["file_hash"], MODEL))
+                         (meta["source"], meta["file_hash"], FINGERPRINT))
 
     assert library.tracker.adopt_untracked() == 2
 

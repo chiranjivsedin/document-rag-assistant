@@ -8,7 +8,9 @@ missing (a file placed higher up) come through as None.
 import hashlib
 import logging
 import os
+import re
 import stat
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -16,6 +18,13 @@ from langchain_core.documents import Document
 from pypdf import PdfReader
 
 SUPPORTED_SUFFIXES = {".pdf", ".md", ".txt"}
+
+# Running headers and footers: a line within the first or last EDGE_LINES text lines of a page whose wording,
+# ignoring a page number at its start or end, sits at a page edge on at least a third of the pages (and at
+# least MIN_REPEATS of them), e.g. "Documentum Server 23.4 Release Notes  3".
+EDGE_LINES = 3
+MIN_REPEATS = 3
+PAGE_NUMBER = re.compile(r"^\d+\s+|\s+\d+$")
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +101,52 @@ def iter_files(documents_dir: Path) -> Iterator[Path]:
 
 
 def load_file(path: Path, documents_dir: Path) -> list[Document]:
-    """One Document per PDF page with text, or one per Markdown/text file."""
+    """One Document per PDF page with text (running headers and footers removed), or one per Markdown/text
+    file."""
     metadata = file_metadata(path, documents_dir)
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        docs = []
-        for number, page in enumerate(PdfReader(path).pages, start=1):
-            text = (page.extract_text() or "").strip()
-            if text:  # pages without a text layer (scans) are skipped
-                docs.append(Document(page_content=text, metadata={**metadata, "page": number}))
-        return docs
+        pages = [(number, (page.extract_text() or "").strip())
+                 for number, page in enumerate(PdfReader(path).pages, start=1)]
+        pages = [(number, text) for number, text in pages if text]  # pages without a text layer (scans) are skipped
+        texts = drop_running_headers([text for _, text in pages])
+        return [Document(page_content=text, metadata={**metadata, "page": number})
+                for (number, _), text in zip(pages, texts) if text]
     if suffix in (".md", ".txt"):
         text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
         return [Document(page_content=text, metadata={**metadata, "page": None})] if text else []
     raise ValueError(f"Unsupported file type: {path.name}")
+
+
+def drop_running_headers(pages: list[str]) -> list[str]:
+    """The pages without their running headers and footers (see EDGE_LINES), each stripped.
+
+    Only lines at a page's edges are candidates, and only wording repeated on many pages, so body text is kept;
+    a page number in the line is ignored, so "2   Release Notes" and "Release Notes  3" are the same header.
+    Removing them keeps a passage that runs across a page break free of them, and keeps them from being taken
+    for numbered section headings.
+    """
+    split = [page.splitlines() for page in pages]
+    edges = [_edge_lines(lines) for lines in split]
+    counts = Counter(key for lines, indexes in zip(split, edges) for key in {_header_key(lines[i]) for i in indexes})
+    threshold = max(MIN_REPEATS, len(pages) / 3)
+    repeated = {key for key, count in counts.items() if key and count >= threshold}
+    cleaned = []
+    for lines, indexes in zip(split, edges):
+        dropped = {i for i in indexes if _header_key(lines[i]) in repeated}
+        cleaned.append("\n".join(line for i, line in enumerate(lines) if i not in dropped).strip())
+    return cleaned
+
+
+def _edge_lines(lines: list[str]) -> list[int]:
+    """Indexes of the first and last EDGE_LINES lines with text."""
+    with_text = [i for i, line in enumerate(lines) if line.strip()]
+    return sorted(set(with_text[:EDGE_LINES] + with_text[-EDGE_LINES:]))
+
+
+def _header_key(line: str) -> str:
+    """The line's wording with spacing normalised and a leading or trailing page number removed."""
+    return PAGE_NUMBER.sub("", " ".join(line.split()))
 
 
 def file_metadata(path: Path, documents_dir: Path) -> dict:

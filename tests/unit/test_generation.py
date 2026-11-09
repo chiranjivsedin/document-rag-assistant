@@ -78,6 +78,32 @@ def test_answer_collapses_repeated_citations():
     assert result.text == "Classic Desktop is deprecated [1]."
 
 
+def test_answer_repairs_broken_citations_and_drops_ones_without_a_passage():
+    model = FakeListChatModel(responses=["Classic Desktop is deprecated [1], 2]. Use Acme Web [7]."])
+    result = answer("What is deprecated?", DOCS, model)  # 2 passages
+    assert result.text == "Classic Desktop is deprecated [1, 2]. Use Acme Web."
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        (f"Classic Desktop is deprecated [1]. {NO_ANSWER}", "Classic Desktop is deprecated [1]."),
+        (f"Classic Desktop is deprecated [1].\nUse Acme Web [2].\n{NO_ANSWER}",
+         "Classic Desktop is deprecated [1].\nUse Acme Web [2]."),
+        (NO_ANSWER, NO_ANSWER),
+        (f"{NO_ANSWER} [1]", NO_ANSWER),
+    ],
+)
+def test_the_no_answer_reply_tacked_onto_an_answer_is_dropped(reply, expected):
+    result = answer("What is deprecated?", DOCS, FakeListChatModel(responses=[reply]))
+    assert result.text == expected
+
+
+def test_a_reply_citing_only_missing_passages_becomes_the_no_answer_reply():
+    result = answer("Which version added a mobile app?", DOCS, FakeListChatModel(responses=["[3]"]))
+    assert result.text == NO_ANSWER
+
+
 def test_no_passages_means_no_model_call():
     model = RecordingModel(responses=["should not be used"], seen=[])
     result = answer("Anything?", [], model)

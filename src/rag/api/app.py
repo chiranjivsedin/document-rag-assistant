@@ -254,7 +254,7 @@ def _source(number: int, doc: Document) -> ChatSource:
         doc_type=meta.get("doc_type"),
         page=meta.get("page"),
         distance=meta["distance"],
-        excerpt=doc.page_content,  # the whole passage the model read (at most CHUNK_SIZE characters)
+        excerpt=doc.page_content,  # the whole passage the model read (section line + up to CHUNK_SIZE characters)
     )
 
 

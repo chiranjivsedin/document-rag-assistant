@@ -99,6 +99,7 @@ Then:
 - This reads every file, splits it into chunks, turns each chunk into numbers with `nomic-embed-text`, and stores everything in the database.
 - It ends with a summary such as `Done in 5.5s: 3 added, 0 updated, 0 unchanged, 0 removed, 3 chunks stored.`
 - Re-run it whenever you add, change or delete files. Unchanged files are skipped, changed ones are replaced and deleted ones are removed, so repeat runs are quick.
+- After changing `EMBEDDING_MODEL`, `CHUNK_SIZE` or `CHUNK_OVERLAP`, or updating to a version that changes how text is chunked, the next run re-processes every file once (it reports them as updated), which takes a while for large guides.
 - To index a different folder, add `--documents-dir D:\some\folder`.
 
 ## 7. Ask a question

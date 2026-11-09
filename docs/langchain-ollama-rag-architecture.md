@@ -32,7 +32,7 @@ flowchart TD
         I5 --> I6{"New or changed file,<br/>or new embedding model?"}
         I6 -->|no| I6a["Skip (unchanged)"]
         I6 -->|yes| I7["Read text + metadata<br/>loaders.load_file()<br/>PDF: one per page · MD/TXT: one per file"]
-        I7 --> I8["Split into chunks<br/>chunking.split_documents()"]
+        I7 --> I8["Split each file into chunks<br/>(pages as one text, section headings)<br/>chunking.split_documents()"]
         I8 --> I9["Delete the file's old chunks (if changed)<br/>then store new chunks<br/>pipeline.ingest() → store.add_documents()"]
         I9 --> I10["Remove chunks of files<br/>deleted from documents/"]
         I10 --> I11["Print report: added / updated /<br/>unchanged / removed"]
@@ -47,7 +47,7 @@ flowchart TD
     subgraph ASK["Phase 2 · Answering — python scripts/ask.py your-question --version 16.2"]
         direction TB
         A1["Load settings + check services<br/>config / health"] --> A2["Connect to vector store<br/>providers.get_vector_store()"]
-        A2 --> A3["Find the k closest chunks<br/>(optional product / version filter)<br/>search.retrieve()"]
+        A2 --> A3["Find the k closest chunks, keeping places<br/>for release notes (optional product / version filter)<br/>service.find_passages() → search.retrieve()"]
         A3 --> A4{"Any chunks found?"}
         A4 -->|no| A4a["Reply: I don't know based on<br/>the available documents."]
         A4 -->|yes| A5["Number the chunks [1] [2] …<br/>and build the prompt<br/>prompts.format_context() + ANSWER_PROMPT"]
@@ -75,12 +75,12 @@ For a file-by-file walk through both workflows in call order, see [under-the-hoo
 | **Providers** | The **only** place that creates the chat model, the embedding model and the vector store. Everything else uses LangChain's standard interfaces, so backends can be swapped here | `src/rag/providers.py` |
 | **Database helpers** | Opens PostgreSQL connections (10 s timeout), converts the URL for the async driver, checks the table exists, lists indexed files (with their fingerprint and embedding model), counts and deletes one file's chunks | `src/rag/database.py` |
 | **Loaders** | Finds supported files and turns them into LangChain `Document`s with metadata from the folder path | `src/rag/ingestion/loaders.py` |
-| **Chunking** | Splits each document into overlapping chunks that keep the metadata | `src/rag/ingestion/chunking.py` |
+| **Chunking** | Splits each file (all its pages as one text) into overlapping chunks that keep the metadata of the page they start on, each prefixed with its numbered section headings | `src/rag/ingestion/chunking.py` |
 | **Ingestion pipeline** | Decides per file: add, replace, skip or remove; stores chunks | `src/rag/ingestion/pipeline.py` |
-| **Retrieval** | Finds the closest chunks to a question, with optional product/version filter, and attaches each chunk's distance | `src/rag/retrieval/search.py` |
+| **Retrieval** | Finds the closest chunks to a question, with optional product/version filter, and attaches each chunk's distance; can keep places for a preferred document type (release notes) | `src/rag/retrieval/search.py` |
 | **Prompt** | The instructions to the model and the numbered, labelled context | `src/rag/generation/prompts.py` |
 | **Answer generation** | LCEL chain that sends the prompt to the chat model and returns plain text, whole or streamed | `src/rag/generation/llm.py` |
-| **Answer checks** | Merges repeated citations (`[1][1]` → `[1]`) and recognises replies that aren't answers: only citations, or only "not stated in the passages" | `src/rag/generation/citations.py` |
+| **Answer checks** | Repairs `[2], 4]`, drops citations of passages that don't exist (`[7]` of 5) and section numbers cited as passages (`[5.2.1.1]`), merges repeated citations (`[1][1]` → `[1]`) and recognises replies that aren't answers: only citations, or only "not stated in the passages" | `src/rag/generation/citations.py` |
 | **Shared service layer** | The glue every entry point uses: build the store and chat model once (`build_services()`), run an ingest against what is already stored (`run_ingest()`), answer a question (`ask()`), and decide which sources to show (`sources_to_show()`) | `src/rag/service.py` |
 | **Indexing entry point** | Command-line script for phase 1 | `scripts/ingest.py` |
 | **Answering entry point** | Command-line script for phase 2 | `scripts/ask.py` |
@@ -146,7 +146,7 @@ Files get there in two ways: copied in by hand, or uploaded through the document
 
 - `iter_files()` lists supported files in a stable (sorted) order. It skips hidden files and folders, never goes through a symlink or junction inside the folder, and skips files with more than one hard link, since either could bring in a file from outside it. Each skipped one is logged, and counts as gone: ingestion removes anything it had indexed from it. A subfolder that can't be read is skipped the same way, with a warning. The documents folder itself is different: if it is missing or can't be listed, the run fails before anything in the index changes (`DocumentsFolderUnreadable`, reported as "Ingestion failed unexpectedly; see the server log"), instead of looking empty and removing everything.
 - `load_file()` returns LangChain `Document`s:
-  - **PDF:** one `Document` per page that has text, with `page` = page number (1, 2, …). Pages without a text layer (scans) are skipped.
+  - **PDF:** one `Document` per page that has text, with `page` = page number (1, 2, …). Pages without a text layer (scans) are skipped. Running headers and footers (a line at a page's top or bottom edge whose wording, page number aside, repeats there on at least a third of the pages) are removed (`drop_running_headers()`).
   - **Markdown / text:** one `Document` for the whole file, `page` = `None`.
 - Every `Document` carries this metadata (`file_metadata()`):
 
@@ -159,11 +159,15 @@ Files get there in two ways: copied in by hand, or uploaded through the document
 
 ### 5.3 Chunk (`chunking.py`)
 
-`split_documents()` cuts each document into chunks of at most `CHUNK_SIZE` characters (default 1000) with `CHUNK_OVERLAP` characters (default 150) repeated between neighbours, so a sentence on a boundary is not lost. The splitter prefers paragraph breaks, then line breaks, then spaces. Each chunk keeps all of its document's metadata and gets a `chunk` number (0, 1, 2, … within that page or file).
+`split_documents()` cuts each file into chunks of at most `CHUNK_SIZE` characters (default 1000) with `CHUNK_OVERLAP` characters (default 150) repeated between neighbours, so a sentence on a boundary is not lost. The splitter prefers paragraph breaks, then line breaks, then spaces.
+
+- A PDF's pages are cut as **one continuous text**, so a chunk can run across a page break: a heading and its intro sentence at the bottom of one page stay with the list or table at the top of the next (in the 23.4 release notes, "2.1 New features" ended page 2 and the features filled page 3).
+- Each chunk keeps the metadata of the page it **starts** on (`page` is where the passage begins) and gets a `chunk` number (0, 1, 2, … within the file).
+- Each chunk starts with the numbered section headings it falls under, e.g. `Section: 2 About Documentum Server 23.4 > 2.1 New features`, so a chunk from the middle of a section still says what it is about. Headings are found conservatively (`is_heading()`): a line of its own such as `8 Known issues` or `2.1.1 Title`, not a table-of-contents entry, a version-matrix row (`7.0 N Y Y`), a numbered list item (`1. Install`) or a table row whose single number breaks the numbering (`16 Superuser …`). A file without numbered headings gets no prefix.
 
 ### 5.4 Decide what to do with each file (`pipeline.py`)
 
-`ingest()` compares each file with what is already stored (`database.indexed_files()` returns, per `source`, its `file_hash` and `embedding_model`):
+`ingest()` compares each file with what is already stored (`database.indexed_files()` returns, per `source`, its `file_hash` and `embedding_model` column, which holds the index fingerprint below):
 
 | Situation | Action | Reported as |
 |---|---|---|
@@ -173,7 +177,7 @@ Files get there in two ways: copied in by hand, or uploaded through the document
 | Stored, but the file is no longer in `documents/` | Delete its chunks | Removed |
 | File has no extractable text | Nothing stored | No text found |
 
-Before storing, each chunk is tagged with `embedding_model` (e.g. `nomic-embed-text`).
+Before storing, each chunk is tagged with `embedding_model` = `index_fingerprint()`: the embedding model plus how the text was cut, e.g. `nomic-embed-text;chunks=v2/1000/150` (`CHUNKING_VERSION` in `pipeline.py`, `CHUNK_SIZE`, `CHUNK_OVERLAP`). "The embedding model changed" in the table above therefore also covers a change of chunk settings or chunking code: the next ingest run re-processes every file once. Bump `CHUNKING_VERSION` whenever a change to loading or chunking should rebuild existing chunks. Chunks stored before version 2 hold just `nomic-embed-text`, so the first run after upgrading re-indexes everything.
 
 ### 5.5 Embed and store
 
@@ -200,11 +204,12 @@ The column list is defined once, in `METADATA_COLUMNS` in `providers.py`. Changi
 
 ### 6.1 Retrieve (`search.py`)
 
-`retrieve(store, question, k=5, version=None, product=None)`:
+`retrieve(store, question, k=5, version=None, product=None, prefer=None)`:
 
 1. The question is embedded with the same `nomic-embed-text` model (inside `PGVectorStore`).
 2. PostgreSQL returns the `k` chunks with the smallest **cosine distance** to the question, optionally only those whose `version` and/or `product` match (both filters combined with AND).
 3. Each returned chunk gets `metadata["distance"]`: 0 means the same meaning; larger means less related. On the sample data, chunks that answer the question scored about 0.27–0.45 and chunks for an unrelated question about 0.55–0.60, but chunks for an on-topic question the documents can't answer (single sign-on) scored 0.44–0.50, so a fixed cut-off would be hard to choose. No cut-off is applied yet; all `k` chunks are passed on.
+4. **Release notes kept in view.** Large guides can crowd short release notes out of the top `k`: with 25 pages of 23.4 release notes beside about 440 pages of guides, "Which PostgreSQL versions does Documentum support?" got five guide passages and a wrong answer, though the release notes state it. So the entry points call `service.find_passages()`, which passes a `Preference` built from the settings: `retrieve()` then fetches `4 × k` candidates and keeps up to `PREFERRED_DOC_TYPE_SLOTS` (default 2) of the `k` places for chunks whose `doc_type` is `PREFERRED_DOC_TYPE` (default `release-notes`), taking the closest such chunks that are at most `PREFERRED_DOC_TYPE_MAX_GAP` (default 0.15) further than the closest candidate, in place of the furthest others. Still `k` passages, closest first, and the filters are still SQL. Set `PREFERRED_DOC_TYPE` empty or the slots to 0 for the plain top `k`.
 
 ### 6.2 Build the prompt (`prompts.py`)
 
@@ -220,7 +225,7 @@ The retrieved chunks are numbered and labelled (`format_context()`), for example
 
 `ANSWER_PROMPT` is a `ChatPromptTemplate` with two messages:
 
-- **System:** answer using only the numbered passages, in sentences that state the facts in words (a citation alone is never an answer); only state what the passages say; name the version each fact applies to; end each sentence with the citations of the passages that state it, each once, like `[2]`; if they don't contain the answer, reply exactly *"I don't know based on the available documents."*; be concise. `answer()` then collapses repeated citations (`[1][1]` → `[1]`) and turns a reply with no words (just `[1]`), or one that only says the passages don't state the answer ("The release date is not stated in the passages [1]."), into that "I don't know" reply.
+- **System:** answer using only the numbered passages, in sentences that state the facts in words (a citation alone is never an answer); only state what the passages say; name the version each fact applies to; end each sentence with the citations of the passages that state it, each once, like `[2]`; if they don't contain the answer, reply exactly *"I don't know based on the available documents."*; be concise. `answer()` then repairs a broken group (`[2], 4]` → `[2, 4]`), drops citations of passages that don't exist (`[7]` when there are 5; a range is cut to fit) and section numbers cited as passages (`[5.2.1.1]`, copied from the chunks' `Section:` lines), collapses repeated citations (`[1][1]` → `[1]`), removes the "I don't know" reply when it is tacked onto a real answer, and turns a reply with no words (just `[1]`), or one that only says the passages don't state the answer ("The release date is not stated in the passages [1]."), into that "I don't know" reply.
 - **Human:** `Context passages: … Question: …`
 
 ### 6.3 Generate (`llm.py`)
@@ -247,7 +252,7 @@ Sources:
   [2] acme-dms/1.0/release-notes/release-notes.md, version 1.0  (distance 0.506)
 ```
 
-Before that, `ask.py` applies the same checks as `answer()`: a streamed reply that is only a citation, or only says the passages don't state the answer, is replaced by the "I don't know" reply. (Repeated citations are not merged here, because the text is already printed as it streams.) The list is hidden when the answer is the "I don't know" reply; that rule lives in `service.sources_to_show()`, so `POST /chat` applies it too. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
+Before that, `ask.py` applies the same checks as `answer()`: a streamed reply that is only a citation, or only says the passages don't state the answer, is replaced by the "I don't know" reply. (Citations are not tidied here, because the text is already printed as it streams.) The list is hidden when the answer is the "I don't know" reply; that rule lives in `service.sources_to_show()`, so `POST /chat` applies it too. Note: it shows **every retrieved chunk**, not only the ones the model actually cited (here `[2]` was retrieved but not cited).
 
 ---
 

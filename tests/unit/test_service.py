@@ -5,7 +5,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rag import service
 from rag.config import get_settings
 from rag.generation.prompts import NO_ANSWER
-from rag.service import Services, ask, build_services, run_ingest, sources_to_show
+from rag.service import Services, ask, build_services, find_passages, run_ingest, sources_to_show
 
 SETTINGS = get_settings({"DATABASE_URL": "postgresql://rag:secret@127.0.0.1:5433/rag", "VECTOR_TABLE": "chunks"})
 
@@ -84,7 +84,33 @@ def test_ask_answers_from_retrieved_passages():
     assert result.text == "Classic Desktop is deprecated [1]."
     assert [doc.page_content for doc in result.sources] == ["Classic Desktop is deprecated.", "Use Acme Web instead."]
     assert [doc.metadata["distance"] for doc in result.sources] == [0.2, 0.4]
-    assert store.searches == [{"query": "What is deprecated?", "k": 3, "filter": {"version": "1.0", "product": "acme"}}]
+    # 4 candidates per passage asked, to keep places for release notes (PREFERRED_DOC_TYPE)
+    assert store.searches == [{"query": "What is deprecated?", "k": 12,
+                               "filter": {"version": "1.0", "product": "acme"}}]
+
+
+def release_notes_case(store_results_count: int = 8):
+    """Guide passages closest, then a release-notes passage just behind them (the PostgreSQL question)."""
+    guide = [(Document(page_content=f"Upgrade guide passage {i}.", metadata={"doc_type": "upgrade-guide"}),
+              0.20 + i / 100) for i in range(store_results_count)]
+    notes = (Document(page_content="Documentum provides options to use Postgres 13.x up to Postgres 15.x.",
+                      metadata={"doc_type": "release-notes", "page": 5}), 0.29)
+    return sorted([*guide, notes], key=lambda pair: pair[1])
+
+
+def test_find_passages_keeps_places_for_release_notes():
+    docs = find_passages(services_with(FakeStore(release_notes_case())), "Which PostgreSQL versions are supported?")
+    assert len(docs) == 5
+    assert [d.metadata["doc_type"] for d in docs].count("release-notes") == 1
+    assert [d.metadata["distance"] for d in docs] == sorted(d.metadata["distance"] for d in docs)
+
+
+def test_find_passages_without_a_preferred_type_is_plain_top_k():
+    settings = get_settings({"DATABASE_URL": SETTINGS.database_url, "PREFERRED_DOC_TYPE": ""})
+    store = FakeStore(release_notes_case())
+    docs = find_passages(Services(settings=settings, store=store, chat_model=None), "Q?")
+    assert [d.metadata["doc_type"] for d in docs] == ["upgrade-guide"] * 5
+    assert store.searches[0]["k"] == 5
 
 
 def test_ask_hides_sources_when_the_model_does_not_know():

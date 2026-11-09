@@ -10,6 +10,7 @@ from functools import partial
 
 from rag import database
 from rag.config import Settings
+from rag.ingestion.pipeline import index_fingerprint
 
 
 @dataclass(frozen=True)
@@ -17,7 +18,7 @@ class IndexAccess:
     delete_chunks: Callable[[str], int]  # remove one source file's chunks; returns how many
     count_chunks: Callable[[list[str]], dict[str, int]]  # chunks per source file (none: left out)
     indexed_files: Callable[[], dict[str, tuple[str, str]]]  # each indexed source -> (file_hash, embedding_model)
-    embedding_model: str  # the model ingestion uses now; chunks from another model count as not indexed
+    fingerprint: str  # what ingestion now stores as embedding_model (index_fingerprint()); others count as not indexed
 
 
 def index_access(settings: Settings) -> IndexAccess:
@@ -26,5 +27,5 @@ def index_access(settings: Settings) -> IndexAccess:
         delete_chunks=partial(database.delete_chunks, url, table),
         count_chunks=partial(database.chunk_counts, url, table),
         indexed_files=partial(database.indexed_files, url, table),
-        embedding_model=settings.embedding_model,
+        fingerprint=index_fingerprint(settings),
     )

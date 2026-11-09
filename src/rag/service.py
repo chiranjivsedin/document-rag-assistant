@@ -17,7 +17,7 @@ from rag.generation.llm import Answer, answer
 from rag.generation.prompts import NO_ANSWER
 from rag.ingestion.pipeline import IngestReport, ingest
 from rag.providers import get_chat_model, get_embeddings, get_vector_store
-from rag.retrieval.search import retrieve
+from rag.retrieval.search import Preference, retrieve
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,25 @@ def ask(
     """Retrieve passages and answer from them; `sources` is empty when the model found no answer."""
     if services.chat_model is None:
         raise ValueError("ask() needs services built with a chat model")
-    docs = retrieve(services.store, question, k=k, version=version, product=product)
+    docs = find_passages(services, question, k=k, version=version, product=product)
     result = answer(question, docs, services.chat_model)
     return Answer(text=result.text, sources=sources_to_show(result.text, docs))
+
+
+def find_passages(
+    services: Services,
+    question: str,
+    k: int = 5,
+    version: str | None = None,
+    product: str | None = None,
+) -> list[Document]:
+    """The k passages to answer from, closest first, with the configured document-type preference applied."""
+    settings = services.settings
+    prefer = None
+    if settings.preferred_doc_type and settings.preferred_doc_type_slots > 0:
+        prefer = Preference(settings.preferred_doc_type, settings.preferred_doc_type_slots,
+                            settings.preferred_doc_type_max_gap)
+    return retrieve(services.store, question, k=k, version=version, product=product, prefer=prefer)
 
 
 def sources_to_show(answer_text: str, docs: list[Document]) -> list[Document]:

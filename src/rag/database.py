@@ -54,7 +54,8 @@ def chunk_counts(database_url: str, table: str, sources: list[str]) -> dict[str,
 
 
 def indexed_files(database_url: str, table: str) -> dict[str, tuple[str, str]]:
-    """Each indexed source file → (file_hash, embedding_model) of its stored chunks."""
+    """Each indexed source file → (file_hash, embedding_model) of its stored chunks. The embedding_model column
+    holds ingestion's index_fingerprint(): the model plus the chunking it used."""
     if not table_exists(database_url, table):
         return {}
     query = sql.SQL("SELECT source, min(file_hash), min(embedding_model) FROM {} GROUP BY source").format(

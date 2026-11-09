@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from rag.ingestion.loaders import DocumentsFolderUnreadable, file_metadata, is_link, iter_files, load_file
+from rag.ingestion.chunking import split_documents
+from rag.ingestion.loaders import (
+    DocumentsFolderUnreadable,
+    drop_running_headers,
+    file_metadata,
+    is_link,
+    iter_files,
+    load_file,
+)
 
 
 def make_pdf(path: Path, pages: list[str]) -> None:
@@ -68,6 +76,45 @@ def test_pdf_gives_one_document_per_page_with_text(docs_dir):
         "doc_type": "release-notes",
         "page": None,
     }
+
+
+WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"]
+
+
+def body(page: int) -> list[str]:
+    """Eight lines of body text that differ from page to page."""
+    return [f"{WORDS[(page + i) % len(WORDS)]} feature notes for page {WORDS[page % len(WORDS)]}" for i in range(8)]
+
+
+def test_running_headers_are_removed_from_pdf_pages():
+    # The Documentum 23.4 release notes put the page number first on even pages and last on odd ones.
+    pages = ["\n".join([f"{n}   Documentum Server 23.4 Release Notes " if n % 2 == 0
+                        else f"Documentum Server 23.4 Release Notes  {n} ", *body(n), " "]) for n in range(2, 8)]
+    assert drop_running_headers(pages) == ["\n".join(body(n)) for n in range(2, 8)]
+
+
+def test_running_footers_are_removed_too():
+    # The Upgrade and Migration Guide's even pages end with the chapter name and the page number + guide code.
+    pages = ["\n".join([*body(n), "Chapter 2   Upgrade and migration overview",
+                        f"{n} OpenText Documentum System EDCCS230400-UMD-EN-01"]) for n in range(10, 16)]
+    assert drop_running_headers(pages) == ["\n".join(body(n)) for n in range(10, 16)]
+
+
+def test_a_line_repeated_in_the_middle_of_pages_is_kept():
+    pages = ["\n".join([*body(n)[:4], "Note: back up the repository first.", *body(n)[4:]]) for n in range(6)]
+    assert drop_running_headers(pages) == pages
+
+
+def test_pdf_pages_are_chunked_as_one_text(tmp_path):
+    make_pdf(tmp_path / "notes.pdf", ["8 Known issues", "TSERVER-471 Thumbnail server installation is limited."])
+    chunks = split_documents(load_file(tmp_path / "notes.pdf", tmp_path), 1000, 150)
+    assert [(c.page_content, c.metadata["page"]) for c in chunks] == [
+        ("8 Known issues\nTSERVER-471 Thumbnail server installation is limited.", 1)]
+
+
+def test_headers_need_several_pages():
+    pages = ["\n".join(["Release Notes 1", *body(1)]), "\n".join(["Release Notes 2", *body(2)])]
+    assert drop_running_headers(pages) == pages
 
 
 def test_markdown_gives_one_document(docs_dir):

@@ -98,3 +98,23 @@ def test_vector_table_must_be_plain_name(table):
 def test_reads_os_environment(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "from-env")
     assert get_settings().llm_model == "from-env"
+
+
+def test_preferred_doc_type_defaults_and_overrides():
+    s = get_settings({})
+    preference = (s.preferred_doc_type, s.preferred_doc_type_slots, s.preferred_doc_type_max_gap)
+    assert preference == ("release-notes", 2, 0.15)
+    s = get_settings({"PREFERRED_DOC_TYPE": " notes ", "PREFERRED_DOC_TYPE_SLOTS": "1",
+                      "PREFERRED_DOC_TYPE_MAX_GAP": "0.3"})
+    assert (s.preferred_doc_type, s.preferred_doc_type_slots, s.preferred_doc_type_max_gap) == ("notes", 1, 0.3)
+    assert get_settings({"PREFERRED_DOC_TYPE": " "}).preferred_doc_type is None  # off
+
+
+@pytest.mark.parametrize(("env", "message"), [
+    ({"PREFERRED_DOC_TYPE_SLOTS": "-1"}, "PREFERRED_DOC_TYPE_SLOTS must be 0"),
+    ({"PREFERRED_DOC_TYPE_MAX_GAP": "-0.1"}, "PREFERRED_DOC_TYPE_MAX_GAP must be a cosine distance"),
+    ({"PREFERRED_DOC_TYPE_MAX_GAP": "close"}, "PREFERRED_DOC_TYPE_MAX_GAP must be a number"),
+])
+def test_invalid_preferred_doc_type_settings(env, message):
+    with pytest.raises(ValueError, match=message):
+        get_settings(env)

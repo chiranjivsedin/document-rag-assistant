@@ -73,3 +73,59 @@ def test_repeated_citations_in_one_place_are_collapsed(reply, tidied):
 )
 def test_other_text_is_left_as_written(reply):
     assert tidy_citations(reply) == reply
+
+
+@pytest.mark.parametrize(
+    ("reply", "tidied"),
+    [
+        # what gemma3:4b wrote in the live test on the Documentum 23.4 documents (5 passages)
+        ("There are no new features in version 23.4 [2], 4].", "There are no new features in version 23.4 [2, 4]."),
+        ("Feature X was added [2] , 4 ,5 ].", "Feature X was added [2, 4, 5]."),
+        ("Feature X was added [2], 2].", "Feature X was added [2]."),  # repaired, then the repeat goes
+        ("Feature X was added [2], 9].", "Feature X was added [2]."),  # repaired, then 9 (no such passage) goes
+    ],
+)
+def test_a_broken_citation_group_is_repaired(reply, tidied):
+    assert tidy_citations(reply, 5) == tidied
+
+
+@pytest.mark.parametrize(
+    ("reply", "tidied"),
+    [
+        ("Postgres 15.x is supported [7].", "Postgres 15.x is supported."),  # only 5 passages
+        ("Postgres 15.x is supported [0].", "Postgres 15.x is supported."),
+        ("Postgres 15.x is supported [2, 7].", "Postgres 15.x is supported [2]."),
+        ("Postgres 15.x is supported [2][7].", "Postgres 15.x is supported [2]."),
+        ("Postgres 15.x is supported [7] and RHEL 7.x is not [3].",
+         "Postgres 15.x is supported and RHEL 7.x is not [3]."),
+        ("Versions differ [4-8].", "Versions differ [4-5]."),  # a range is cut to the passages there are
+        ("Versions differ [5-8].", "Versions differ [5]."),
+        ("Versions differ [6-8].", "Versions differ."),
+        ("Postgres 15.x is supported [2][3].", "Postgres 15.x is supported [2][3]."),  # valid: kept as written
+        ("Versions [1-3] differ [5].", "Versions [1-3] differ [5]."),
+    ],
+)
+def test_citations_of_passages_that_do_not_exist_are_dropped(reply, tidied):
+    assert tidy_citations(reply, 5) == tidied
+
+
+@pytest.mark.parametrize(
+    "reply, tidied",
+    [
+        ("Add-on repositories can be provisioned [5.2.1.1].", "Add-on repositories can be provisioned."),
+        ("Linux Slim is the base image [5.2.2]. Spring 6.x is used [3].",
+         "Linux Slim is the base image. Spring 6.x is used [3]."),
+        ("New features are listed [5][2.1].", "New features are listed [5]."),
+        ("Documentum 23.4 supports Spring 6.x [1].", "Documentum 23.4 supports Spring 6.x [1]."),  # prose numbers stay
+    ],
+)
+def test_section_numbers_cited_as_passages_are_dropped(reply, tidied):
+    assert tidy_citations(reply, 5) == tidied
+
+
+def test_without_the_number_of_passages_no_citation_is_dropped():
+    assert tidy_citations("Postgres 15.x is supported [7].") == "Postgres 15.x is supported [7]."
+
+
+def test_a_reply_left_with_only_invalid_citations_is_not_an_answer():
+    assert has_no_words(tidy_citations("[7]", 5))

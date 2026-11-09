@@ -13,8 +13,7 @@ from rag.generation.citations import has_no_words, only_says_not_stated
 from rag.generation.llm import stream_answer
 from rag.generation.prompts import NO_ANSWER, source_label
 from rag.health import check_services
-from rag.retrieval.search import retrieve
-from rag.service import build_services, sources_to_show
+from rag.service import build_services, find_passages, sources_to_show
 
 
 def main() -> int:
@@ -33,7 +32,7 @@ def main() -> int:
 
     started = time.monotonic()
     services = build_services(settings)
-    docs = retrieve(services.store, args.question, k=args.k, version=args.version, product=args.product)
+    docs = find_passages(services, args.question, k=args.k, version=args.version, product=args.product)
     text = ""
     for piece in stream_answer(args.question, docs, services.chat_model):
         print(piece, end="", flush=True)  # show the answer as the model writes it
