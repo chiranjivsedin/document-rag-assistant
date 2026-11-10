@@ -7,6 +7,11 @@ from typing import Protocol
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 
+# Passages given to the model when the caller doesn't say. 3, not 5: in a live test on the Documentum 23.4 documents
+# gemma3:4b answered ~40% faster (about 70 s instead of 110 s on the laptop CPU) with the same or better answers,
+# because reading the passages is most of its time.
+DEFAULT_K = 3
+
 # With a preference, or with hybrid search, this many candidates per requested passage are fetched (from each search)
 # to choose from.
 CANDIDATES_PER_RESULT = 4
@@ -42,7 +47,7 @@ class Hybrid:
 def retrieve(
     store: VectorStore,
     question: str,
-    k: int = 5,
+    k: int = DEFAULT_K,
     version: str | None = None,
     product: str | None = None,
     prefer: Preference | None = None,

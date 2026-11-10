@@ -16,7 +16,7 @@ class FakeStore:
 def test_no_filters_passes_none():
     store = FakeStore([])
     retrieve(store, "What is deprecated?")
-    assert store.calls == [{"query": "What is deprecated?", "k": 5, "filter": None}]
+    assert store.calls == [{"query": "What is deprecated?", "k": 3, "filter": None}]  # DEFAULT_K
 
 
 def test_version_and_product_filters():

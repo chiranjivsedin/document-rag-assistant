@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from rag.retrieval.search import DEFAULT_K
+
 # Optional filter: surrounding spaces trimmed; an empty value means "no filter", as in retrieve().
 Filter = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
 
@@ -27,7 +29,7 @@ class ChatRequest(BaseModel):
     question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
     product: Filter | None = None
     version: Filter | None = None
-    k: int = Field(default=5, ge=1, le=20, description="Number of passages to retrieve")
+    k: int = Field(default=DEFAULT_K, ge=1, le=20, description="Number of passages to retrieve")
 
 
 class ChatSource(BaseModel):

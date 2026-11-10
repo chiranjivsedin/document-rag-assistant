@@ -17,7 +17,7 @@ from rag.generation.llm import Answer, answer
 from rag.generation.prompts import NO_ANSWER
 from rag.ingestion.pipeline import IngestReport, ingest
 from rag.providers import get_chat_model, get_embeddings, get_keyword_search, get_vector_store
-from rag.retrieval.search import Hybrid, KeywordSearch, Preference, retrieve
+from rag.retrieval.search import DEFAULT_K, Hybrid, KeywordSearch, Preference, retrieve
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ def run_ingest(services: Services, documents_dir: Path) -> IngestReport:
 def ask(
     services: Services,
     question: str,
-    k: int = 5,
+    k: int = DEFAULT_K,
     version: str | None = None,
     product: str | None = None,
 ) -> Answer:
@@ -62,7 +62,7 @@ def ask(
 def find_passages(
     services: Services,
     question: str,
-    k: int = 5,
+    k: int = DEFAULT_K,
     version: str | None = None,
     product: str | None = None,
 ) -> list[Document]:

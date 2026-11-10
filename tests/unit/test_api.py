@@ -169,8 +169,8 @@ def test_chat_returns_answer_and_numbered_sources(checks):
         {"number": 2, "source": "acme/1.0/release-notes/notes.md", "product": "acme", "version": "1.0",
          "doc_type": "release-notes", "page": None, "distance": 0.4, "excerpt": "Use Acme Web instead."},
     ]
-    # 4 candidates per passage, to keep places for release notes (PREFERRED_DOC_TYPE); 5 passages are returned
-    assert store.searches == [{"query": "What is deprecated?", "k": 20, "filter": None}]
+    # no k sent: DEFAULT_K (3) passages, and 4 candidates per passage to keep places for release notes
+    assert store.searches == [{"query": "What is deprecated?", "k": 12, "filter": None}]
     assert checks.calls == [(SETTINGS, True)]
 
 

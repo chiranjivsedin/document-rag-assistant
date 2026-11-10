@@ -26,11 +26,14 @@ export interface IngestJob {
   error: string | null; // set when status is "failed"
 }
 
+/** Passages per question when the user doesn't choose: the server's default (DEFAULT_K in retrieval/search.py). */
+export const DEFAULT_TOP_K = 3;
+
 export interface ChatRequest {
   question: string; // 1–2000 characters after trimming
   product?: string; // optional filters; leave out for "no filter"
   version?: string;
-  k?: number; // passages to retrieve, 1–20 (server default 5)
+  k?: number; // passages to retrieve, 1–20 (server default DEFAULT_TOP_K)
 }
 
 export interface ChatSource {

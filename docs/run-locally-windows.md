@@ -109,7 +109,7 @@ Then:
 ```
 
 - **The question** goes in quotes.
-- **`--version 1.0`** (optional) only uses documents from that version's folder. `--product acme-dms` does the same for product. `--k 3` changes how many passages it retrieves (default 5).
+- **`--version 1.0`** (optional) only uses documents from that version's folder. `--product acme-dms` does the same for product. `--k 5` changes how many passages it retrieves (default 3).
 - **What happens:** it finds the passages closest in meaning, together with passages that share the question's rarer words (issue IDs, product names, versions), sends them to `gemma3:4b` with strict instructions to answer only from them, and prints the answer as it is written. Then it lists the **Sources**, where `[1]` in the answer is `[1]` in the list, each with its distance and which search found it (`vector`, `keyword` or `both`).
 - **Time on a laptop CPU:** about 20–65 seconds when the question needs new passages (the model reads them first), a few seconds when it reuses the previous question's passages, and 15–30 seconds more when the model has to load: the first question after Ollama starts, or after 30 idle minutes.
 - **Unanswerable questions:** if the documents don't contain the answer, it replies `I don't know based on the available documents.` A reply that is only a citation such as `[1]`, or only says the passages don't state the answer, is treated the same way.

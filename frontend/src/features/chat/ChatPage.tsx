@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { postChat } from "../../api/client";
-import type { ChatRequest } from "../../api/types";
+import { DEFAULT_TOP_K, type ChatRequest } from "../../api/types";
 import { describeError } from "../../components/ErrorMessage";
 import { AlertIcon, ArrowUpIcon, IndexIcon, SparkIcon, TagIcon } from "../../components/Icons";
 import { ChatTurn, turnElementId, type Turn } from "./ChatTurn";
@@ -37,7 +37,7 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
   const [question, setQuestion] = useState("");
   const [product, setProduct] = useState("");
   const [version, setVersion] = useState("");
-  const [k, setK] = useState("5");
+  const [k, setK] = useState(String(DEFAULT_TOP_K));
   const [formError, setFormError] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]); // oldest first, like a conversation
   const controller = useRef<AbortController | null>(null);

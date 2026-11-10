@@ -124,8 +124,8 @@ describe("ChatPage: asking", () => {
     render(<ChatPage />);
     await ask("Q?", { product: "   " });
     await screen.findByText(/See also/);
-    expect(requests).toEqual([{ question: "Q?", k: 5 }]);
-    expect(scopeChips()).toEqual(["all documents", "top 5"]);
+    expect(requests).toEqual([{ question: "Q?", k: 3 }]);
+    expect(scopeChips()).toEqual(["all documents", "top 3"]);
   });
 
   it("offers example questions that fill the composer without sending", async () => {

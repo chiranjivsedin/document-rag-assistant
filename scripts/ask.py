@@ -13,6 +13,7 @@ from rag.generation.citations import has_no_words, only_says_not_stated
 from rag.generation.llm import stream_answer
 from rag.generation.prompts import NO_ANSWER, source_label
 from rag.health import check_services
+from rag.retrieval.search import DEFAULT_K
 from rag.service import build_services, find_passages, sources_to_show
 
 
@@ -21,7 +22,7 @@ def main() -> int:
     parser.add_argument("question")
     parser.add_argument("--version", help="only use documents for this version, e.g. 16.2")
     parser.add_argument("--product", help="only use documents for this product")
-    parser.add_argument("--k", type=int, default=5, help="number of passages to retrieve (default 5)")
+    parser.add_argument("--k", type=int, default=DEFAULT_K, help=f"number of passages to retrieve (default {DEFAULT_K})")
     args = parser.parse_args()
 
     settings = get_settings()

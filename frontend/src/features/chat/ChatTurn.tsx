@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { ChatRequest, ChatResponse } from "../../api/types";
+import { DEFAULT_TOP_K, type ChatRequest, type ChatResponse } from "../../api/types";
 import { ElapsedTimer } from "../../components/ElapsedTimer";
 import { ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
 import { CheckIcon, CopyIcon, InfoIcon, RetryIcon, SparkIcon } from "../../components/Icons";
@@ -25,7 +25,7 @@ interface Props {
 function scopeChips(request: ChatRequest): string[] {
   const chips = [request.product && `product ${request.product}`, request.version && `version ${request.version}`];
   const filters = chips.filter((chip): chip is string => Boolean(chip));
-  return [...(filters.length ? filters : ["all documents"]), `top ${request.k ?? 5}`];
+  return [...(filters.length ? filters : ["all documents"]), `top ${request.k ?? DEFAULT_TOP_K}`];
 }
 
 export function turnElementId(id: number): string {

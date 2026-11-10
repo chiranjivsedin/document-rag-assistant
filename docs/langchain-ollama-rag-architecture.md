@@ -208,7 +208,7 @@ The column list is defined once, in `METADATA_COLUMNS` in `providers.py`. Changi
 
 ### 6.1 Retrieve (`search.py`)
 
-`retrieve(store, question, k=5, version=None, product=None, prefer=None, hybrid=None)`:
+`retrieve(store, question, k=3, version=None, product=None, prefer=None, hybrid=None)`:
 
 1. The question is embedded with the same `nomic-embed-text` model.
 2. PostgreSQL returns the chunks with the smallest **cosine distance** to the question, optionally only those whose `version` and/or `product` match (both filters combined with AND).
