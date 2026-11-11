@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from pathlib import Path
@@ -310,6 +311,73 @@ def test_chat_500_hides_unexpected_errors(client, checks, monkeypatch):
     assert response.status_code == 500
     assert response.json() == {"detail": "Internal server error."}
     assert "secret" not in response.text
+
+
+# --- POST /chat: question log (QUESTION_LOG) -----------------------------------------------------
+
+def logged_client(tmp_path, reply="Classic Desktop is deprecated [1]."):
+    path = tmp_path / "questions.jsonl"
+    settings = get_settings({"DATABASE_URL": SETTINGS.database_url, "QUESTION_LOG": str(path)})
+    services = Services(settings=settings, store=FakeStore(list(PASSAGES)),
+                        chat_model=FakeListChatModel(responses=[reply]))
+    return TestClient(api.create_app(settings, services=services), raise_server_exceptions=False), path
+
+
+def logged(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_chat_logs_an_answer_with_its_passages(tmp_path, checks):
+    client, path = logged_client(tmp_path)
+    body = client.post("/chat", json={"question": " What is deprecated? ", "version": "1.0", "k": 2}).json()
+    [entry] = logged(path)
+    assert {key: entry[key] for key in ("question", "product", "version", "k", "outcome", "status", "answer",
+                                         "error", "model")} == {
+        "question": "What is deprecated?", "product": None, "version": "1.0", "k": 2, "outcome": "answered",
+        "status": 200, "answer": "Classic Desktop is deprecated [1].", "error": None, "model": "gemma3:4b"}
+    assert entry["elapsed_ms"] == body["elapsed_ms"]
+    assert [(p["n"], p["source"], p["cited"]) for p in entry["passages"]] == [
+        (1, "acme/1.0/deprecated-features/list.pdf", True), (2, "acme/1.0/release-notes/notes.md", False)]
+
+
+def test_chat_logs_the_passages_of_an_i_dont_know_reply(tmp_path, checks):
+    client, path = logged_client(tmp_path, reply=NO_ANSWER)
+    assert client.post("/chat", json={"question": "Unrelated?"}).json()["sources"] == []  # hidden from users
+    [entry] = logged(path)
+    assert entry["outcome"] == "no_answer"
+    assert len(entry["passages"]) == 2  # but kept in the log, to see why it found nothing
+
+
+def test_chat_logs_unavailable_services(tmp_path, checks):
+    client, path = logged_client(tmp_path)
+    checks.problems = [OLLAMA_DOWN]
+    assert client.post("/chat", json={"question": "Q?"}).status_code == 503
+    [entry] = logged(path)
+    assert (entry["outcome"], entry["status"], entry["error"], entry["answer"]) == ("unavailable", 503, OLLAMA_DOWN, None)
+
+
+def test_chat_logs_a_model_failure(tmp_path, checks, monkeypatch):
+    client, path = logged_client(tmp_path)
+    monkeypatch.setattr(api, "ask", failing_ask(httpx.ReadTimeout("timed out")))
+    assert client.post("/chat", json={"question": "Q?"}).status_code == 502
+    [entry] = logged(path)
+    assert (entry["outcome"], entry["status"], entry["error"]) == ("error", 502, "The model service failed: ReadTimeout")
+
+
+def test_chat_logs_only_the_type_of_an_unexpected_error(tmp_path, checks, monkeypatch):
+    client, path = logged_client(tmp_path)
+    monkeypatch.setattr(api, "ask", failing_ask(RuntimeError("bug near postgresql://rag:secret@db")))
+    assert client.post("/chat", json={"question": "Q?"}).status_code == 500
+    [entry] = logged(path)
+    assert (entry["outcome"], entry["status"], entry["error"]) == ("error", 500, "RuntimeError")
+    assert "secret" not in path.read_text(encoding="utf-8")
+
+
+def test_chat_writes_no_log_by_default(tmp_path, checks, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client, _ = make_client()  # SETTINGS has no QUESTION_LOG
+    assert client.post("/chat", json={"question": "Q?"}).status_code == 200
+    assert list(tmp_path.iterdir()) == []
 
 
 # --- POST /chat: services built lazily ---------------------------------------------------------

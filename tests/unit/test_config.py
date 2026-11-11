@@ -24,6 +24,12 @@ def test_frontend_dist(raw, expected):
     assert get_settings({"FRONTEND_DIST": raw}).frontend_dist == expected
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(None, None), ("", None), ("   ", None),
+                                               (" E:\\rag\\logs\\questions.jsonl ", "E:\\rag\\logs\\questions.jsonl")])
+def test_question_log_is_off_unless_named(raw, expected):
+    assert get_settings({} if raw is None else {"QUESTION_LOG": raw}).question_log == expected
+
+
 def test_cors_origins_are_a_comma_separated_list():
     s = get_settings({"API_CORS_ORIGINS": " http://localhost:5173, https://dms.example.com ,"})
     assert s.api_cors_origins == ("http://localhost:5173", "https://dms.example.com")

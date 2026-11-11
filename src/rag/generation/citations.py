@@ -46,6 +46,16 @@ def only_says_not_stated(text: str) -> bool:
     return bool(sentences) and all(NOT_STATED.search(s) and DOCUMENTS.search(s) for s in sentences)
 
 
+def cited_numbers(text: str) -> set[int]:
+    """The passage numbers a reply cites: "[1]", "[1, 3]" and "[2-4]" (all of 2, 3, 4) all count."""
+    numbers: set[int] = set()
+    for group in GROUP.finditer(text):
+        for item in group.group()[1:-1].split(","):
+            ends = [int(n) for n in re.findall(r"\d+", item)]
+            numbers.update(range(min(ends), max(ends) + 1))
+    return numbers
+
+
 def tidy_citations(text: str, passages: int | None = None) -> str:
     """Repair "[2], 4]" into "[2, 4]"; with the number of `passages`, drop citation numbers that match no passage
     ("[7]" with 5 passages; a group left empty goes with the spaces before it) and section numbers cited as

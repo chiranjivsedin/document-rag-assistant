@@ -51,12 +51,13 @@ def ask(
     version: str | None = None,
     product: str | None = None,
 ) -> Answer:
-    """Retrieve passages and answer from them; `sources` is empty when the model found no answer."""
+    """Retrieve passages and answer from them; `sources` is empty when the model found no answer, `retrieved` always
+    holds every passage the model was given."""
     if services.chat_model is None:
         raise ValueError("ask() needs services built with a chat model")
     docs = find_passages(services, question, k=k, version=version, product=product)
     result = answer(question, docs, services.chat_model)
-    return Answer(text=result.text, sources=sources_to_show(result.text, docs))
+    return Answer(text=result.text, sources=sources_to_show(result.text, docs), retrieved=docs)
 
 
 def find_passages(

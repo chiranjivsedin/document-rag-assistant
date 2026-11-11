@@ -1,6 +1,6 @@
 import pytest
 
-from rag.generation.citations import has_no_words, only_says_not_stated, tidy_citations
+from rag.generation.citations import cited_numbers, has_no_words, only_says_not_stated, tidy_citations
 
 
 @pytest.mark.parametrize("reply", ["[1]", " [1][2]. ", "[1], [2]", "[1, 2]", "[1-3]", "[ 2 ]\n", "", " . "])
@@ -129,3 +129,14 @@ def test_without_the_number_of_passages_no_citation_is_dropped():
 
 def test_a_reply_left_with_only_invalid_citations_is_not_an_answer():
     assert has_no_words(tidy_citations("[7]", 5))
+
+
+@pytest.mark.parametrize("reply, numbers", [
+    ("No citation.", set()),
+    ("A [1]. B [3][1].", {1, 3}),
+    ("A [1, 2] and [ 4 ].", {1, 2, 4}),
+    ("A [2-4].", {2, 3, 4}),
+    ("A [2–3].", {2, 3}),  # an en dash, as small models write it
+])
+def test_cited_numbers(reply, numbers):
+    assert cited_numbers(reply) == numbers

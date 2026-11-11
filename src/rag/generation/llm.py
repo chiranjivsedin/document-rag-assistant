@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
@@ -17,6 +17,9 @@ from rag.generation.prompts import ANSWER_PROMPT, NO_ANSWER, format_context
 class Answer:
     text: str
     sources: list[Document]  # the passages given to the model, in citation order ([1] = sources[0])
+    # Every passage given to the model, also when `sources` is emptied for an "I don't know" reply (service.ask);
+    # kept for the question log (rag.question_log), never shown to users.
+    retrieved: list[Document] = field(default_factory=list)
 
 
 def answer_chain(chat_model: BaseChatModel) -> Runnable:

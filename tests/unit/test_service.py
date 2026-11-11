@@ -119,6 +119,7 @@ def test_ask_hides_sources_when_the_model_does_not_know():
     result = ask(services_with(FakeStore(PASSAGES), NO_ANSWER), "Unrelated?")
     assert result.text == NO_ANSWER
     assert result.sources == []
+    assert len(result.retrieved) == len(PASSAGES)  # still known, for the question log
 
 
 def test_ask_treats_a_citation_only_reply_as_no_answer():

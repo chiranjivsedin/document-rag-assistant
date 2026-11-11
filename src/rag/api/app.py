@@ -37,6 +37,7 @@ from rag.dms.library import DocumentLibrary, build_library
 from rag.generation.prompts import NO_ANSWER
 from rag.health import check_services
 from rag.ingestion.pipeline import IngestReport
+from rag.question_log import QuestionLog, log_entry
 from rag.service import Services, ask, build_services, run_ingest
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             return built["library"]
 
     jobs = IngestJobs()
+    question_log = QuestionLog(Path(settings.question_log)) if settings.question_log else None
 
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, error: Exception) -> JSONResponse:
@@ -105,27 +107,48 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     )
     def chat(request: ChatRequest) -> ChatResponse:
         """Answer a question from the indexed documents, optionally limited to a product and/or version."""
+        started = time.monotonic()
+
+        def elapsed_ms() -> int:
+            return round((time.monotonic() - started) * 1000)
+
+        def record(outcome: str, status: int, elapsed: int, answer: str | None = None,
+                   passages: list[Document] | None = None, error: str | None = None) -> None:
+            if question_log is not None:
+                question_log.write(log_entry(
+                    question=request.question, product=request.product, version=request.version, k=request.k,
+                    model=settings.llm_model, outcome=outcome, status=status, elapsed_ms=elapsed,
+                    answer=answer, passages=passages or [], error=error,
+                ))
+
         problems = check_services(settings, need_chat_model=True)
         if problems:
+            record("unavailable", 503, elapsed_ms(), error=" ".join(problems))
             raise HTTPException(status_code=503, detail=" ".join(problems))
 
-        started = time.monotonic()
+        started = time.monotonic()  # elapsed_ms covers answering, as before, not the service checks
         try:
             result = ask(get_services(), request.question, k=request.k,
                          version=request.version, product=request.product)
         except Exception as error:
             failure = backend_failure(error)
             if failure is None:
+                # The exception's type only: its message may hold secrets (a connection string, a path).
+                record("error", 500, elapsed_ms(), error=type(error).__name__)
                 raise
             logger.warning("Backend failure during /chat", exc_info=error)
+            record("error", failure[0], elapsed_ms(), error=failure[1])
             raise HTTPException(status_code=failure[0], detail=failure[1]) from None
 
+        elapsed = elapsed_ms()
+        no_answer = NO_ANSWER in result.text
+        record("no_answer" if no_answer else "answered", 200, elapsed, answer=result.text, passages=result.retrieved)
         return ChatResponse(
             answer=result.text,
-            no_answer=NO_ANSWER in result.text,
+            no_answer=no_answer,
             sources=[_source(number, doc) for number, doc in enumerate(result.sources, 1)],
             model=settings.llm_model,
-            elapsed_ms=round((time.monotonic() - started) * 1000),
+            elapsed_ms=elapsed,
         )
 
     @app.post(
