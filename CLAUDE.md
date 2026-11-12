@@ -9,9 +9,8 @@ A working local prototype: LangChain + Ollama + pgvector in Docker, two command-
 Branches:
 - `integration`: the complete working application (backend + frontend). Create each new phase's branch from it (e.g. `feature/dms-api`), and merge the branch back after review and approval.
 - `main`: lead-approved work only. It holds just the scaffold until the lead confirms requirements (VM, "16.2" product, mini DMS, hosting); `integration` is merged into it only then.
-- `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`, `feature/ui-redesign`, `fix/rag-answer-quality`, `fix/sidebar-history-scroll`, `docs/refresh-guides`: earlier branches, each contained in `integration`; kept for reference.
-- `feature/serve-frontend` (F1, from `feature/dms`): the API serves the built web app (`FRONTEND_DIST`). Merged into `integration` after `feature/dms`, after review.
-- `feature/dms`: the document library (D1 table and repository, D2 storage and endpoints, D3 indexing status and storage hardening, D4 Documents screen, then docs); merged into `integration` after review.
+- `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`, `feature/ui-redesign`, `fix/rag-answer-quality`, `fix/sidebar-history-scroll`, `docs/refresh-guides`, `feature/dms` (the document library): earlier branches on GitHub, each contained in `integration`; kept for reference.
+- Later branches were local only: each was fast-forwarded into `integration` after review and then deleted (serving the web app from the API, storage hardening, retrieval quality, hybrid search, 3 passages by default, the question log). Their commits are in `integration`'s history.
 
 ## Running the prototype (Windows, from the repo root)
 
