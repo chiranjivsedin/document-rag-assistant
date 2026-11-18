@@ -128,3 +128,15 @@ The source documents now are 43 OpenText Content Suite / Content Management PDFs
 - An admin key protects the lists; tagging an individual document needs no key.
 - Bulk loading by folder copy and adoption rather than 43 uploads; the runbook is updated at deployment, not now.
 - Existing sample documents are not worth migrating: their values are not imported, and they are removed when the Content Suite documents are loaded.
+
+## Addendum (2026-11-18): filter controls as chips
+
+The first build's Chat filters mixed native dropdowns of different widths, a "Tags" toggle pill and a Passages box, and wrapped Document type onto a second line. Approved replacement (option A of a side-by-side mockup; option B kept for narrow screens):
+
+- **Chips with pop-up menus**, one row, one height, one style: `Product: Any ▾`, `Version: 16.2 ▾`, `Type: Release notes ▾`, then `+ Filter` to add an extra category's chip (only categories in use show a chip). Unset chips are muted ("Any"); set chips are highlighted. The separate "Tags" toggle goes away.
+- **Menu:** a custom popover (not a native `<select>`): a search box (always for Version; for any list over 8 values), the values (active ones; in Chat and Documents filters also retired ones, marked "(retired)"), a tick on the chosen one, and "Clear". Multi-value categories allow several ticks. "Clear all" appears once two or more filters are set.
+- **Passages** moves behind a settings button (⚙) next to Send.
+- **Narrow screens** (the composer narrower than ~560 px): the chips collapse into one `Filters (n)` button that opens a panel with all filters and Passages (option B), plus the active filters as removable tags.
+- **Production basics:** real buttons; Enter/Space opens, arrow keys move, Esc closes and returns focus to the chip; `aria-expanded`/listbox semantics; clicking outside closes; filters stay for the session and show in each answer's scope line (as today).
+- **The same chip component** replaces the filter dropdowns on the Documents screen.
+- Not changed: the Upload card and Edit-tags dialog keep their form controls (they assign values, they don't filter); the API.

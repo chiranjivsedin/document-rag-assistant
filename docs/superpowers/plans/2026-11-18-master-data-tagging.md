@@ -163,3 +163,17 @@
 - [ ] **Step 3:** Stop the containers you started.
 - [ ] **Step 4:** Commit `docs: master-data tagging`.
 - [ ] **Step 5:** Report: commits, test summaries, anything deferred or unsure.
+
+### Task 9: Filter chips (design addendum, 2026-11-18)
+
+**Files:**
+- Create: `frontend/src/components/FilterChips.tsx` (chip row + popover menu + narrow-screen panel), `frontend/src/components/FilterChips.test.tsx`
+- Modify: `frontend/src/features/chat/ChatPage.tsx` (replace the Product/Version selects, the Tags toggle and the Passages box), `frontend/src/features/library/DocumentsPage.tsx` (its filter row), `frontend/src/styles.css`, the related tests
+
+**Interfaces:**
+- Consumes: Task 5 `useTags()` / `TagCategory` / `TagValue`.
+- Produces: `FilterChips` props `{ categories: TagCategory[]; selected: Record<string, string[]>; onChange(next: Record<string, string[]>): void; alwaysShown: string[] /* e.g. ["product","version","doc_type"] */; includeRetired: boolean; settings?: ReactNode /* Chat: the Passages control behind ⚙ */ }`.
+
+- [ ] **Step 1:** Tests: chips render in one row with "Any" for unset; clicking a chip opens a menu with a search box for Version that filters the list; choosing a value updates the chip and calls `onChange`; "Clear" and "Clear all" (shown at ≥ 2 filters); `+ Filter` lists only extra categories not yet shown and adds a chip; multi-value category allows several ticks; Esc closes and returns focus; retired values appear marked "(retired)" only when `includeRetired`; narrow mode (mock a container width < 560) renders one "Filters (n)" button and a panel; Chat sends the same request shape as before (`product`, `version`, `doc_type`, `tags`, `k`); the Documents filters still narrow the list.
+- [ ] **Step 2:** Run (`npm test`); fail. **Step 3:** Implement (no new npm dependency; match the existing styles and the approved mockup: same-height pill chips, muted unset, tinted set). **Step 4:** `npm run typecheck && npm test && npm run build` pass; full Python unit suite still passes.
+- [ ] **Step 5:** Commit `feat(frontend): filter chips with menus in Chat and Documents`.
