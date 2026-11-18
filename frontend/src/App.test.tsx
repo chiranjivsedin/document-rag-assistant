@@ -111,7 +111,7 @@ describe("App: chat across the shell", () => {
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe(
       "Which features are deprecated in version 16.2?",
     );
-    expect((screen.getByLabelText("Version (optional)") as HTMLSelectElement).value).toBe("16.2");
+    expect(screen.getByRole("button", { name: "Version: 16.2" })).toBeTruthy();
     expect(fetch.mock.calls.filter(([url]) => url === "/tags")).toHaveLength(1); // one shared copy for all screens
     expect(fetch.mock.calls.filter(([url]) => url === "/chat")).toHaveLength(0);
   });

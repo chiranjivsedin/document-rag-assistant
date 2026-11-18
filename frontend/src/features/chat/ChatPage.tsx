@@ -1,43 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { postChat } from "../../api/client";
-import { DEFAULT_TOP_K, type ChatRequest, type TagCategory } from "../../api/types";
+import { BUILTIN_KEYS, DEFAULT_TOP_K, type ChatRequest } from "../../api/types";
 import { describeError } from "../../components/ErrorMessage";
+import { FilterChips, type FilterSelection } from "../../components/FilterChips";
 import { AlertIcon, ArrowUpIcon, IndexIcon, SparkIcon, TagIcon } from "../../components/Icons";
-import { filterLabel, findCategory, useTags } from "../tags/useTags";
+import { useTags } from "../tags/useTags";
 import { ChatTurn, turnElementId, type Turn } from "./ChatTurn";
 
 const MAX_QUESTION = 2000; // same limit as ChatRequest in src/rag/api/schemas.py
-
-/** A filter picked from a master list: "Any" (no filter) or one of its values, retired ones marked. */
-function TagSelect({
-  category,
-  value,
-  onChange,
-  label,
-}: {
-  category: TagCategory | undefined;
-  value: string;
-  onChange: (code: string) => void;
-  label: string;
-}) {
-  const values = category?.values ?? [];
-  const known = values.some((v) => v.code === value);
-  return (
-    <label className="pill-field">
-      <span>{category?.label ?? label}</span>
-      <select aria-label={`${category?.label ?? label} (optional)`} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Any</option>
-        {values.map((v) => (
-          <option key={v.id} value={v.code}>
-            {filterLabel(v)}
-          </option>
-        ))}
-        {value && !known && <option value={value}>{value}</option>}
-      </select>
-    </label>
-  );
-}
+const ALWAYS_SHOWN = [...BUILTIN_KEYS]; // the chips always in the composer; extra categories come via + Filter
 
 const SUGGESTIONS = [
   { icon: TagIcon, title: "Deprecated features", question: "Which features are deprecated?" },
@@ -65,13 +37,8 @@ interface Props {
 /** Ask questions through POST /chat. History lives in memory for this browser session only. */
 export function ChatPage({ prefill = null, onHistoryChange }: Props) {
   const [question, setQuestion] = useState("");
-  const [product, setProduct] = useState("");
-  const [version, setVersion] = useState("");
-  const [docType, setDocType] = useState("");
-  const [extra, setExtra] = useState<Record<string, string>>({}); // extra category key -> code ("" = any)
-  const [tagsOpen, setTagsOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterSelection>({}); // category key -> chosen codes; kept for the session
   const tags = useTags();
-  const extraCategories = tags.categories.filter((category) => !category.builtin);
   const [k, setK] = useState(String(DEFAULT_TOP_K));
   const [formError, setFormError] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]); // oldest first, like a conversation
@@ -85,7 +52,7 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
   useEffect(() => {
     if (!prefill) return;
     setQuestion(prefill.question);
-    setVersion(prefill.version ?? "");
+    setFilters((current) => ({ ...current, version: prefill.version ? [prefill.version] : [] }));
     setFormError(null);
     questionBox.current?.focus();
   }, [prefill]);
@@ -109,7 +76,6 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
   }, [question]);
 
   const waiting = turns.some((turn) => turn.status === "waiting");
-  const tagCount = (docType ? 1 : 0) + extraCategories.filter((category) => extra[category.key]).length;
 
   const update = (id: number, change: Partial<Turn>) =>
     setTurns((all) => all.map((turn) => (turn.id === id ? ({ ...turn, ...change } as Turn) : turn)));
@@ -145,11 +111,15 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
     }
     setFormError(null);
     const request: ChatRequest = { question: text, k: topK };
+    // The built-in categories take one value each; extra categories go in `tags` (any of a category's codes).
+    const [product] = filters.product ?? [];
+    const [version] = filters.version ?? [];
+    const [docType] = filters.doc_type ?? [];
     if (product) request.product = product;
     if (version) request.version = version;
     if (docType) request.doc_type = docType;
     const chosen = Object.fromEntries(
-      extraCategories.filter((category) => extra[category.key]).map((category) => [category.key, [extra[category.key]]]),
+      Object.entries(filters).filter(([key, codes]) => !(BUILTIN_KEYS as readonly string[]).includes(key) && codes.length > 0),
     );
     if (Object.keys(chosen).length > 0) request.tags = chosen;
     setQuestion("");
@@ -188,51 +158,35 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
           placeholder={turns.length ? "Ask a follow-up question…" : "Ask about a version, its release notes or deprecated features…"}
         />
         <div className="composer-row">
-          <div className="filters">
-            <TagSelect category={findCategory(tags.categories, "product")} label="Product" value={product} onChange={setProduct} />
-            <TagSelect category={findCategory(tags.categories, "version")} label="Version" value={version} onChange={setVersion} />
-            <button
-              type="button"
-              className={tagsOpen || tagCount > 0 ? "pill-field pill-button pill-on" : "pill-field pill-button"}
-              aria-expanded={tagsOpen}
-              aria-controls="chat-tags"
-              onClick={() => setTagsOpen((open) => !open)}
-            >
-              <TagIcon />
-              <span>{tagCount > 0 ? `Tags · ${tagCount}` : "Tags"}</span>
-            </button>
-            <label className="pill-field">
-              <span>Passages</span>
-              <input
-                aria-label="Top-k"
-                type="number"
-                value={k}
-                onChange={(e) => setK(e.target.value)}
-                min={1}
-                max={20}
-                step={1}
-              />
-            </label>
-          </div>
+          <FilterChips
+            categories={tags.categories}
+            selected={filters}
+            onChange={setFilters}
+            alwaysShown={ALWAYS_SHOWN}
+            includeRetired
+            settings={
+              <>
+                <label className="settings-field">
+                  <span>Passages</span>
+                  <input
+                    aria-label="Top-k"
+                    type="number"
+                    value={k}
+                    onChange={(e) => setK(e.target.value)}
+                    min={1}
+                    max={20}
+                    step={1}
+                  />
+                </label>
+                <p className="hint">How many passages the answer is based on (1–20).</p>
+              </>
+            }
+          />
           <button type="submit" className="send" aria-label="Ask" disabled={waiting || !question.trim()}>
             <ArrowUpIcon />
           </button>
         </div>
-        {tagsOpen && (
-          <div className="filters chat-tags" id="chat-tags" role="group" aria-label="Tags">
-            <TagSelect category={findCategory(tags.categories, "doc_type")} label="Document type" value={docType} onChange={setDocType} />
-            {extraCategories.map((category) => (
-              <TagSelect
-                key={category.key}
-                category={category}
-                label={category.label}
-                value={extra[category.key] ?? ""}
-                onChange={(code) => setExtra((current) => ({ ...current, [category.key]: code }))}
-              />
-            ))}
-            {tags.error && <span className="hint">Couldn't load the tag lists ({tags.error}).</span>}
-          </div>
-        )}
+        {tags.error && <p className="hint">Couldn't load the tag lists ({tags.error}).</p>}
       </form>
       {formError && (
         <p className="banner banner-error" role="alert">

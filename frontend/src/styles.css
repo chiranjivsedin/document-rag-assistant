@@ -826,95 +826,390 @@ textarea {
   gap: 10px;
 }
 
-.filters {
+/* ---------- Filter chips (Chat composer, Documents) ----------
+   One row of same-height chips: muted while "Any", tinted once set. Each opens a pop-up menu (search, values with a
+   tick, Clear). Below the narrow width the row folds into one "Filters (n)" button with a panel. */
+
+.filter-bar {
+  flex: 1 1 0; /* its width comes from the row, never from its content, so the narrow switch can't flip back and forth */
+  min-width: 0;
+}
+
+.filter-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
-.pill-field {
+.filter-anchor {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.filter-chip {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 5px;
   height: 32px;
-  padding: 0 4px 0 11px;
+  max-width: 100%;
+  padding: 0 9px 0 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   font-size: 12.5px;
   color: var(--text-3);
-  cursor: text;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
-.pill-field:hover {
+.filter-chip:hover {
   border-color: var(--border-strong);
+  color: var(--text-2);
 }
 
-.pill-field:focus-within {
-  border-color: var(--accent);
-  background: var(--surface);
-}
-
-.pill-field input {
-  border: none;
-  background: transparent;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 4px 8px 4px 6px;
+.filter-chip-value {
   min-width: 0;
-}
-
-.pill-field input:focus {
-  outline: none;
-}
-
-.pill-field input::placeholder {
-  color: var(--text-3);
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 500;
 }
 
-.pill-field input[type="number"] {
-  width: 3.4em;
+.filter-chip.is-set {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
-.pill-field select {
-  border: none;
+.filter-chip.is-set .filter-chip-value {
+  font-weight: 650;
+}
+
+.filter-chip[aria-expanded="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.filter-chip .icon {
+  opacity: 0.75;
+  transition: transform 120ms ease;
+}
+
+.filter-chip[aria-expanded="true"] .icon {
+  transform: rotate(180deg);
+}
+
+.filter-add {
+  padding: 0 12px;
+  border-style: dashed;
+  border-color: var(--border-strong);
   background: transparent;
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 4px 4px 4px 6px;
-  max-width: 14em;
-}
-
-.pill-field select:focus {
-  outline: none;
-}
-
-/* The Tags pill opens the extra filters (document type and extra categories) under the composer row. */
-.pill-button {
-  gap: 6px;
-  padding: 0 12px 0 10px;
-  cursor: pointer;
   font-weight: 600;
   color: var(--text-2);
 }
 
-.pill-button .icon {
-  width: 14px;
-  height: 14px;
+.filter-clear-all {
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-text);
 }
 
-.pill-on {
+.filter-clear-all:hover {
+  background: var(--accent-soft);
+}
+
+.filter-settings {
+  margin-left: auto; /* next to Send */
+}
+
+.filter-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  transition: border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.filter-icon-button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.filter-icon-button[aria-expanded="true"] {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.chat-tags {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
+/* Pop-ups open below their button, or above it (is-up) when there is more room there, as in the docked composer. */
+.filter-pop {
+  position: absolute;
+  z-index: 15; /* above the sticky top bar, below the small-screen sidebar */
+  top: calc(100% + 6px);
+  left: 0;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  text-align: left;
+}
+
+.filter-pop.is-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.filter-pop.is-end {
+  left: auto;
+  right: 0;
+}
+
+.filter-menu {
+  display: grid;
+  gap: 2px;
+  width: 240px;
+}
+
+.filter-add-menu {
+  width: 200px;
+}
+
+.filter-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  margin-bottom: 4px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-3);
+}
+
+.filter-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.filter-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+}
+
+.filter-search input:focus {
+  outline: none;
+}
+
+.filter-options {
+  display: grid;
+  gap: 1px;
+  max-height: 248px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.filter-option:hover {
+  background: var(--surface-2);
+}
+
+.filter-option:focus {
+  outline: none;
+}
+
+.filter-option:focus-visible {
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.filter-option[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.filter-option .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.filter-retired {
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.filter-empty {
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.filter-menu-foot {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.filter-clear {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--accent-text);
+  text-align: left;
+}
+
+.filter-clear:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.filter-clear:disabled {
+  color: var(--text-3);
+}
+
+/* The settings pop-up (Chat: Passages). */
+.filter-settings-pop {
+  display: grid;
+  gap: 8px;
+  width: 240px;
+  padding: 12px;
+}
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.settings-field input {
+  width: 4.6em;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.settings-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Narrow: the chosen filters as removable tags, and one Filters (n) button opening a panel with every filter. */
+.filter-tags {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.filter-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+.filter-tag button {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+.filter-tag button:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.filter-panel-anchor {
+  margin-left: auto;
+}
+
+.filter-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  width: min(320px, calc(100vw - 32px));
+  padding: 14px;
+}
+
+.filter-panel-label {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.filter-panel .filter-anchor,
+.filter-panel .filter-chip {
+  width: 100%;
+}
+
+.filter-panel .filter-chip {
+  justify-content: space-between;
+}
+
+.filter-panel-settings {
+  display: grid;
+  gap: 6px;
+  grid-column: 1 / -1;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.filter-panel-foot {
+  display: flex;
+  justify-content: space-between;
+  grid-column: 1 / -1;
+  margin-top: 4px;
 }
 
 .send {

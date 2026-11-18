@@ -1,16 +1,19 @@
 import { useMemo, useState } from "react";
 
 import { startIngest } from "../../api/client";
-import type { DocumentRecord, DocumentStatus, TagCategory } from "../../api/types";
+import { BUILTIN_KEYS, type DocumentRecord, type DocumentStatus, type TagCategory } from "../../api/types";
 import { describeError, ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
+import { FilterChips, type FilterSelection } from "../../components/FilterChips";
 import { AlertIcon, CheckIcon, IndexIcon, RetryIcon } from "../../components/Icons";
 import { type DeleteOutcome, DocumentTable } from "./DocumentTable";
-import { filterLabel, useTags } from "../tags/useTags";
+import { useTags } from "../tags/useTags";
 import { isWaiting, matchesSearch, STATUS_LABELS } from "./format";
 import { UploadCard } from "./UploadCard";
 import { useDocuments } from "./useDocuments";
 
 type Notice = { kind: "ok"; text: string } | { kind: "error"; error: ErrorText } | null;
+
+const ALWAYS_SHOWN = [...BUILTIN_KEYS]; // the filter chips always shown; extra categories come via + Filter
 
 /** Whether a document has this tag: its folder value for a built-in category, one of its tags for an extra one. */
 function hasTag(document: DocumentRecord, category: TagCategory, code: string): boolean {
@@ -26,7 +29,7 @@ function hasTag(document: DocumentRecord, category: TagCategory, code: string): 
 export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boolean; pollIntervalMs?: number }) {
   const { state, reload, add, remove, replace } = useDocuments(active, pollIntervalMs);
   const tags = useTags();
-  const [tagFilter, setTagFilter] = useState<Record<string, string>>({}); // category key -> code ("" = all)
+  const [tagFilter, setTagFilter] = useState<FilterSelection>({}); // category key -> chosen codes (none = all)
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | "all">("all");
   const [notice, setNotice] = useState<Notice>(null);
@@ -37,7 +40,11 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
     (d) =>
       (statusFilter === "all" || d.status === statusFilter) &&
       matchesSearch(d, search) &&
-      tags.categories.every((category) => !tagFilter[category.key] || hasTag(d, category, tagFilter[category.key])),
+      // Every filtered category must match, with any of its chosen values.
+      tags.categories.every((category) => {
+        const codes = tagFilter[category.key] ?? [];
+        return codes.length === 0 || codes.some((code) => hasTag(d, category, code));
+      }),
   );
   const counts = {
     total: documents.length,
@@ -140,22 +147,6 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
                 </option>
               ))}
             </select>
-            {tags.categories.map((category) => (
-              <select
-                key={category.key}
-                className="select-field"
-                aria-label={`Filter by ${category.label}`}
-                value={tagFilter[category.key] ?? ""}
-                onChange={(event) => setTagFilter((current) => ({ ...current, [category.key]: event.target.value }))}
-              >
-                <option value="">{`All: ${category.label}`}</option>
-                {category.values.map((value) => (
-                  <option key={value.id} value={value.code}>
-                    {filterLabel(value)}
-                  </option>
-                ))}
-              </select>
-            ))}
             <button
               type="button"
               className="button button-ghost button-small"
@@ -173,6 +164,14 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
             )}
           </div>
         </div>
+        <FilterChips
+          label="Filter documents"
+          categories={tags.categories}
+          selected={tagFilter}
+          onChange={setTagFilter}
+          alwaysShown={ALWAYS_SHOWN}
+          includeRetired
+        />
 
         <div aria-live="polite">
           {notice?.kind === "ok" && (

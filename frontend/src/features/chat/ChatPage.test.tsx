@@ -100,11 +100,18 @@ function neverAnswer() {
   return { fetch, signals };
 }
 
+/** Choose `value` in the filter chip of `category` (its menu closes again for a single-value category). */
+async function pick(user: ReturnType<typeof userEvent.setup>, category: string, value: string) {
+  await user.click(screen.getByRole("button", { name: new RegExp(`^${category}: `) }));
+  await user.click(within(screen.getByRole("listbox", { name: category })).getByRole("option", { name: value }));
+}
+
 async function ask(question: string, options: { product?: string; version?: string; k?: string } = {}) {
   const user = userEvent.setup();
-  if (options.product) await user.selectOptions(screen.getByLabelText("Product (optional)"), options.product);
-  if (options.version) await user.selectOptions(screen.getByLabelText("Version (optional)"), options.version);
+  if (options.product) await pick(user, "Product", options.product);
+  if (options.version) await pick(user, "Version", options.version);
   if (options.k !== undefined) {
+    await user.click(screen.getByRole("button", { name: "Answer settings" }));
     await user.clear(screen.getByLabelText("Top-k"));
     await user.type(screen.getByLabelText("Top-k"), options.k);
   }
@@ -151,7 +158,7 @@ describe("ChatPage: asking", () => {
   it("leaves out filters left at Any", async () => {
     const { requests } = answer(ANSWERED);
     render(<ChatPage />, { wrapper });
-    await ask("Q?", { product: "Any" });
+    await ask("Q?");
     await screen.findByText(/See also/);
     expect(requests).toEqual([{ question: "Q?", k: 3 }]);
     expect(scopeChips()).toEqual(["all documents", "top 3"]);
@@ -171,7 +178,7 @@ describe("ChatPage: asking", () => {
     const { rerender } = render(<ChatPage />, { wrapper });
     rerender(<ChatPage prefill={{ id: 1, question: "What is new in version 16.2?", version: "16.2" }} />);
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("What is new in version 16.2?");
-    expect((screen.getByLabelText("Version (optional)") as HTMLSelectElement).value).toBe("16.2");
+    expect(screen.getByRole("button", { name: "Version: 16.2" })).toBeTruthy();
   });
 
   it("keeps the Ask button disabled for a blank question", async () => {
@@ -444,42 +451,53 @@ describe("ChatPage: errors", () => {
 });
 
 describe("ChatPage: filters from the master lists", () => {
-  function optionsOf(label: string) {
-    return within(screen.getByLabelText(label)).getAllByRole("option").map((o) => o.textContent);
+  function optionsOf(category: string) {
+    return within(screen.getByRole("listbox", { name: category })).getAllByRole("option").map((o) => o.textContent);
   }
 
-  it("offers Product and Version as dropdowns with Any; retired values are marked, still usable as filters", () => {
+  it("shows Product, Version and Type as chips with menus; retired values are marked, still usable as filters", async () => {
     answer(ANSWERED);
     render(<ChatPage />, { wrapper });
-    expect(optionsOf("Product (optional)")).toEqual(["Any", "Acme DMS", "Content Management"]);
-    expect(optionsOf("Version (optional)")).toEqual(["Any", "1.0", "9.9", "16.2", "0.9 (retired)"]);
+    const user = userEvent.setup();
+    const filters = screen.getByRole("group", { name: "Filters" });
+    expect(within(filters).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+      "Product: Any", "Version: Any", "Document type: Any", "+ Filter", "Answer settings"]);
+    await user.click(screen.getByRole("button", { name: "Product: Any" }));
+    expect(optionsOf("Product")).toEqual(["Acme DMS", "Content Management"]);
+    await user.click(screen.getByRole("button", { name: "Version: Any" }));
+    expect(optionsOf("Version")).toEqual(["1.0", "9.9", "16.2", "0.9 (retired)"]);
     expect(screen.queryAllByRole("textbox").map((box) => box.getAttribute("id"))).toEqual(["chat-question"]);
   });
 
-  it("sends document type and extra tags from the Tags area, and shows them by label", async () => {
+  it("sends document type and extra tags chosen in the chips, and shows them by label", async () => {
     const { requests } = answer(ANSWERED);
     render(<ChatPage />, { wrapper });
     const user = userEvent.setup();
-    expect(screen.queryByLabelText("Document type (optional)")).toBeNull(); // folded away until asked for
-    await user.click(screen.getByRole("button", { name: "Tags" }));
-    await user.selectOptions(screen.getByLabelText("Document type (optional)"), "Release notes");
-    expect(optionsOf("Module (optional)")).toEqual(["Any", "Workflow", "Search (retired)"]);
-    await user.selectOptions(screen.getByLabelText("Module (optional)"), "Workflow");
-    expect(screen.getByRole("button", { name: "Tags · 2" }).getAttribute("aria-expanded")).toBe("true");
-    await ask("Q?", { version: "1.0" });
+    await pick(user, "Document type", "Release notes");
+    await user.click(screen.getByRole("button", { name: "+ Filter" }));
+    await user.click(screen.getByRole("menuitem", { name: "Module" }));
+    expect(optionsOf("Module")).toEqual(["Workflow", "Search (retired)"]);
+    await user.click(screen.getByRole("option", { name: "Workflow" }));
+    expect(screen.getByRole("button", { name: "Module: Workflow" })).toBeTruthy();
+    await ask("Q?", { version: "1.0", k: "5" });
 
     await screen.findByText(/See also/);
-    expect(requests).toEqual([{ question: "Q?", k: 3, version: "1.0", doc_type: "release-notes", tags: { module: ["workflow"] } }]);
-    expect(scopeChips()).toEqual(["version 1.0", "type Release notes", "module Workflow", "top 3"]);
+    expect(requests).toEqual([
+      { question: "Q?", k: 5, version: "1.0", doc_type: "release-notes", tags: { module: ["workflow"] } },
+    ]);
+    expect(scopeChips()).toEqual(["version 1.0", "type Release notes", "module Workflow", "top 5"]);
+    expect(screen.getByRole("button", { name: "Version: 1.0" })).toBeTruthy(); // filters stay for the next question
   });
 
-  it("leaves out tags set back to Any", async () => {
+  it("leaves out tags cleared again", async () => {
     const { requests } = answer(ANSWERED);
     render(<ChatPage />, { wrapper });
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Tags" }));
-    await user.selectOptions(screen.getByLabelText("Module (optional)"), "Workflow");
-    await user.selectOptions(screen.getByLabelText("Module (optional)"), "Any");
+    await user.click(screen.getByRole("button", { name: "+ Filter" }));
+    await user.click(screen.getByRole("menuitem", { name: "Module" }));
+    await user.click(screen.getByRole("option", { name: "Workflow" }));
+    await user.click(screen.getByRole("button", { name: "Module: Workflow" }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
     await ask("Q?");
     await screen.findByText(/See also/);
     expect(requests).toEqual([{ question: "Q?", k: 3 }]);

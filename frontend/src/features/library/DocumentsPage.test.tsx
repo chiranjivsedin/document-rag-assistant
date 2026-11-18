@@ -492,15 +492,33 @@ describe("tags", () => {
     await screen.findAllByRole("option", { name: "Content Management" });
     const names = () => rows().map((r) => within(r).getByRole("strong").textContent);
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Module" }), "Workflow");
+    const u = userEvent.setup();
+    const filters = screen.getByRole("group", { name: "Filter documents" });
+    const pick = async (category: string, value: string) => {
+      await u.click(within(filters).getByRole("button", { name: new RegExp(`^${category}: `) }));
+      await u.click(within(screen.getByRole("listbox", { name: category })).getByRole("option", { name: value }));
+    };
+
+    await u.click(within(filters).getByRole("button", { name: "+ Filter" }));
+    await u.click(screen.getByRole("menuitem", { name: "Module" }));
+    await u.click(within(screen.getByRole("listbox", { name: "Module" })).getByRole("option", { name: "Workflow" }));
     expect(names()).toEqual(["tagged.md"]);
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Module" }), "All: Module");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Version" }), "20.2 (retired)");
+    await u.click(within(filters).getByRole("button", { name: "Module: Workflow" }));
+    await u.click(screen.getByRole("button", { name: "Clear" }));
+    await pick("Version", "20.2 (retired)");
     expect(names()).toEqual(["old.md"]); // a retired value still filters
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Product" }), "Documentum");
+    await pick("Product", "Documentum");
     expect(screen.getByText("No documents match this search.")).toBeTruthy();
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Version" }), "16.2");
+    await pick("Version", "16.2");
     expect(names()).toEqual(["Release Notes.pdf"]);
+    await u.click(within(filters).getByRole("button", { name: "Clear all" }));
+    expect(names()).toHaveLength(4);
+
+    // A multi-value category matches documents with any of the ticked values.
+    await u.click(within(filters).getByRole("button", { name: "+ Filter" }));
+    await u.click(screen.getByRole("menuitem", { name: "Audience" }));
+    await u.click(within(screen.getByRole("listbox", { name: "Audience" })).getByRole("option", { name: "Developers" }));
+    expect(names()).toEqual(["tagged.md"]);
   });
 
   it("edits a document's extra tags; retired ones it has may stay, and none needs the admin key", async () => {
