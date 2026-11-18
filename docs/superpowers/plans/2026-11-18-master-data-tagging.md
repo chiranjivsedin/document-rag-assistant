@@ -31,7 +31,7 @@
 
 1. **Case and spacing duplicates:** adding value label "Release Notes" when "Release notes" exists, or code "Release-Notes" next to "release-notes", must be refused (409), compared case-insensitively after trimming. → test in Task 1 (`test_duplicate_label_or_code_differing_only_in_case_is_refused`).
 2. **Version order:** `16.10` sorts after `16.9`, `20.2` after `16.7`, non-numeric codes (e.g. imported `latest`) after all numeric ones. → Task 1 (`test_versions_sort_numerically`).
-3. **Re-start on an existing database** (the VM, the laptop): seeding and importing existing values run again without duplicates; existing values keep their exact stored spelling (`AcmeDocs`, not `acmedocs`). → Task 1 (`test_seed_and_import_are_idempotent_and_keep_spelling`).
+3. **Re-start on an existing database** (the VM, the laptop): seeding runs again without duplicates and doesn't undo admin changes (a retired or relabelled seed value stays as the admin left it). → Task 1 (`test_seed_is_idempotent_and_keeps_admin_changes`).
 4. **Tag filter that matches no document**, or only a retired value: chat returns the fixed "I don't know" reply without calling the model; a retired value still filters. → Task 4 (`test_tag_filter_with_no_matching_document_answers_without_the_model`, `test_retired_value_still_filters`).
 5. **Admin key handling:** header with surrounding spaces, empty header, key sent as a query parameter (`?key=`) must all fail (401), and a 401/403 response body never echoes the key. → Task 2 (`test_admin_key_variants_are_refused`).
 
@@ -52,7 +52,7 @@
   - exceptions `TagNotFound(Exception)`, `TagConflict(Exception)` (message is client-safe), `TagInUse(Exception)`
   - `class TagRepository(database_url: str, documents_table: str = "documents", prefix: str = "")` (prefix is prepended to the three table names so tests use their own tables) with:
     - `create_tables() -> None` (idempotent; `document_tags.document_id` references the documents table `ON DELETE CASCADE`; `tag_values` unique on `(category_id, lower(code))`, and on `(category_id, lower(label))` where active)
-    - `seed_and_import(chunks_table: str | None = "chunks") -> None` (seed the Global-Constraints values if `tag_categories` is empty; then add, as active, every distinct non-null product/version/doc_type found in the documents table, and in the chunks table if it exists, that isn't already a code in its category; exact spelling kept; versions get `sort_order` from `version_sort_key`)
+    - `seed() -> None` (insert the Global-Constraints values only if `tag_categories` is empty; versions get `sort_order` from `version_sort_key`). Existing documents' values are **not** imported: they are test samples, shown as "not in master list".
     - `categories() -> list[TagCategory]` (categories by `sort_order`, built-ins first; values sorted by `sort_order`, then label)
     - `add_category(key: str, label: str, multiple: bool) -> TagCategory` (key: lowercase letters, digits, hyphens, ≤ 32 chars, not a built-in key; `TagConflict` if taken)
     - `add_value(category_key: str, code: str, label: str) -> TagValue` (built-in codes checked with `check_folder_name`; extra-category codes: same rule; `TagConflict` on case-insensitive duplicate code or active label)
@@ -64,7 +64,7 @@
     - `sources_with_tags(selected: Mapping[str, Sequence[str]]) -> set[str]` (documents.source of documents that, for every given extra category key, have at least one of the given codes; retired values count)
 
 - [ ] **Step 1:** Write unit tests in `tests/unit/test_tags.py`: `test_versions_sort_numerically` (`sorted(["16.10", "latest", "20.2", "16.9", "16.2"], key=version_sort_key) == ["16.2", "16.9", "16.10", "20.2", "latest"]`), and key/code validation helpers if you factor them out.
-- [ ] **Step 2:** Write integration tests in `tests/integration/test_tags_live.py`: `test_seed_creates_the_three_builtins` (product has `content-management`; version has exactly the 30 codes in order; doc_type the 4 codes with their labels), `test_seed_and_import_are_idempotent_and_keep_spelling` (a documents row with product `AcmeDocs`, version `2.1`; run `seed_and_import` twice; `AcmeDocs` appears once, spelled `AcmeDocs`), `test_duplicate_label_or_code_differing_only_in_case_is_refused`, `test_retired_value_is_kept_but_inactive`, `test_value_in_use_cannot_be_deleted` (used by a document row; and an unused one can), `test_set_document_tags_rules` (built-in value refused, retired refused, two values in a single-value category refused, multi-value category accepts two), `test_document_delete_cascades_its_tags`, `test_sources_with_tags_requires_every_category` (two categories → intersection; within one → union).
+- [ ] **Step 2:** Write integration tests in `tests/integration/test_tags_live.py`: `test_seed_creates_the_three_builtins` (product has `content-management`; version has exactly the 30 codes in order; doc_type the 4 codes with their labels), `test_seed_is_idempotent_and_keeps_admin_changes` (seed, retire `16.2` and relabel `release-notes`, seed again: no duplicates, changes kept), `test_existing_document_values_are_not_imported` (a documents row with product `acme` stays out of the product list), `test_duplicate_label_or_code_differing_only_in_case_is_refused`, `test_retired_value_is_kept_but_inactive`, `test_value_in_use_cannot_be_deleted` (used by a document row; and an unused one can), `test_set_document_tags_rules` (built-in value refused, retired refused, two values in a single-value category refused, multi-value category accepts two), `test_document_delete_cascades_its_tags`, `test_sources_with_tags_requires_every_category` (two categories → intersection; within one → union).
 - [ ] **Step 3:** Run both; expect failures (module missing).
 - [ ] **Step 4:** Implement `src/rag/dms/tags.py` (psycopg with `sql.Identifier` for table names, parameters for every value; use the existing helpers in `rag.database` for connections).
 - [ ] **Step 5:** Run unit + `pytest -m integration tests/integration/test_tags_live.py`; all pass; full unit suite still passes.
@@ -74,7 +74,7 @@
 
 **Files:**
 - Modify: `src/rag/config.py` (`admin_key: str | None` from `ADMIN_KEY`, stripped, empty → None), `.env.example` (documented, empty)
-- Create: `src/rag/api/tags.py` (router), Modify: `src/rag/api/app.py` (lazy `get_tags()` like `get_library()`, built with `TagRepository(...).create_tables(); seed_and_import()`; include router), `src/rag/api/schemas.py`
+- Create: `src/rag/api/tags.py` (router), Modify: `src/rag/api/app.py` (lazy `get_tags()` like `get_library()`, built with `TagRepository(...).create_tables(); seed()`; include router), `src/rag/api/schemas.py`
 - Test: `tests/unit/test_tags_api.py` (fake repository), `tests/unit/test_config.py`
 
 **Interfaces:**

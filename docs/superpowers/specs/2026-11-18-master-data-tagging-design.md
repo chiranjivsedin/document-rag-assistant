@@ -70,7 +70,7 @@ The source documents now are 43 OpenText Content Suite / Content Management PDFs
   - Product: `content-management` "Content Management".
   - Version: exactly these 30 (labels = codes), sorted numerically: 16.2, 16.4, 16.6, 16.7, 20.2, 20.3, 20.4, 21.1, 21.2, 21.3, 21.4, 22.1, 22.2, 22.3, 22.4, 23.1, 23.2, 23.3, 23.4, 24.1, 24.2, 24.3, 24.4, 25.1, 25.2, 25.3, 25.4, 26.1, 26.2, 26.4. (No 26.3: OpenText published none for this product.)
   - Document type: `release-notes` "Release notes", `installation-guide` "Installation guide", `upgrade-guide` "Upgrade guide", `admin-guide` "Administration guide".
-- **Existing values** found in the `documents` table (e.g. `acme-dms`, `AcmeDocs`, `documentum`, `23.4`, `deprecated-features`) are added to their built-in category as **active** values, so nothing breaks. The admin can retire them.
+- **Existing documents are only test samples** (decided 2026-11-18): their values (e.g. `acme-dms`, `AcmeDocs`, `documentum`) are **not imported** into the lists. They keep working and are shown "not in master list" until they are removed.
 - Documents whose built-in value isn't in the list (e.g. files copied into the folder by hand) still show and answer; the Documents screen marks the value "not in master list".
 
 ### Which documents, under which folders (decided 2026-11-18)
@@ -127,4 +127,4 @@ The source documents now are 43 OpenText Content Suite / Content Management PDFs
 - Starting categories are the three built-ins; the lead's own categories are added through the admin screen.
 - An admin key protects the lists; tagging an individual document needs no key.
 - Bulk loading by folder copy and adoption rather than 43 uploads; the runbook is updated at deployment, not now.
-- Existing values (Documentum, test products) are imported as active so nothing breaks before the switch; they are cleaned up when the Content Suite documents are loaded.
+- Existing sample documents are not worth migrating: their values are not imported, and they are removed when the Content Suite documents are loaded.
