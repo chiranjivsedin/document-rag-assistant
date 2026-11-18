@@ -63,3 +63,15 @@ def indexed_files(database_url: str, table: str) -> dict[str, tuple[str, str]]:
     )
     with connect(database_url) as conn:
         return {source: (file_hash, model) for source, file_hash, model in conn.execute(query)}
+
+
+def column_has_value(database_url: str, table: str, column: str, value: str) -> bool:
+    """Whether any chunk's `column` (product, version or doc_type) equals `value`, ignoring case (False if no table yet).
+    Used before a master-data value is deleted."""
+    if not table_exists(database_url, table):
+        return False
+    query = sql.SQL("SELECT EXISTS (SELECT 1 FROM {} WHERE lower({}) = lower(%s))").format(
+        sql.Identifier(table), sql.Identifier(column)
+    )
+    with connect(database_url) as conn:
+        return conn.execute(query, (value,)).fetchone()[0]
