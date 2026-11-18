@@ -248,3 +248,12 @@ def test_sources_with_tags_requires_every_category(tags, documents):
         tags.sources_with_tags({"nope": ["x"]})
     with pytest.raises(TagNotFound):
         tags.sources_with_tags({"product": ["content-management"]})
+
+
+def test_value_deleted_during_an_update_is_not_found(tags, monkeypatch):
+    # Another request deletes the value between update_value()'s first read and its update: 404, not a crash.
+    gone = tags.add_value("doc_type", "short-lived", "Short-lived")
+    tags.delete_value(gone.id)
+    monkeypatch.setattr(tags, "_value", lambda value_id: gone)
+    with pytest.raises(TagNotFound):
+        tags.update_value(gone.id, label="Renamed")

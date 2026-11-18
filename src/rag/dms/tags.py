@@ -329,9 +329,12 @@ class TagRepository:
         new_label = current.label if label is None else check_label(label)
         new_active = current.active if active is None else active
         with self._connect() as conn:
-            category_id, category_label = conn.execute(self._sql(
+            row = conn.execute(self._sql(
                 "SELECT c.id, c.label FROM {values} v JOIN {categories} c ON c.id = v.category_id WHERE v.id = %s"
             ), (value_id,)).fetchone()
+            if row is None:  # deleted by someone else since _value() read it
+                raise TagNotFound(f"Unknown tag value {value_id}.")
+            category_id, category_label = row
             if new_active:
                 self._check_label_free(conn, category_id, category_label, new_label, except_id=value_id)
             with _conflicts_as(TagConflict(f"{category_label} already has an active value labelled '{new_label}'.")):
