@@ -621,3 +621,175 @@ def test_requests_during_a_running_job_never_release_its_claims(tmp_path, librar
 
     fake_pipeline.gate.set()
     wait_for(lambda: {d["status"] for d in client.get("/documents").json()["documents"]} == {"indexed"})
+
+
+# Master data: uploads use the lists, documents carry tags (rag.dms.tags)
+
+TAGGED_FORM = {"product": "content-management", "version": "24.4", "doc_type": "release-notes"}
+
+
+@pytest.fixture
+def tagged(tmp_path, fake_repository, fake_index, fake_tags):
+    """A client whose library has the master lists, with an extra single-value category "module" and a multi-value
+    "audience"."""
+    fake_tags.add_category("module", "Module", multiple=False)
+    fake_tags.add_category("audience", "Audience", multiple=True)
+    for key, code, label in [("module", "workflow", "Workflow"), ("module", "search", "Search"),
+                             ("audience", "admins", "Administrators"), ("audience", "developers", "Developers")]:
+        fake_tags.add_value(key, code, label)
+    library = DocumentLibrary(DocumentStorage(tmp_path, max_bytes=1024 * 1024), fake_repository,
+                              fake_index.access(), tags=fake_tags)
+    return TestClient(api.create_app(settings_for(tmp_path), library=library), raise_server_exceptions=False)
+
+
+def post_tagged(client, filename="notes.md", tags=(), **form):
+    return client.post("/documents", data={**TAGGED_FORM, **form, "tag": [str(t) for t in tags]},
+                       files={"file": (filename, b"# Notes", "text/markdown")})
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("version", "9.9", "Version '9.9' is not in the master list."),
+    ("product", "acme", "Product 'acme' is not in the master list."),
+    ("doc_type", "Release-Notes", "Document type 'Release-Notes' is not in the master list."),
+])
+def test_upload_refuses_a_code_not_in_the_list(tagged, tmp_path, field, value, message):
+    response = post_tagged(tagged, **{field: value})
+    assert response.status_code == 422
+    assert response.json() == {"detail": message}
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def test_upload_refuses_a_retired_code(tagged, fake_tags, tmp_path):
+    fake_tags.update_value(fake_tags.value("version", "24.4").id, active=False)
+    response = post_tagged(tagged)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Version '24.4' is retired; choose another."}
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def test_upload_with_extra_tags(tagged, fake_tags):
+    workflow, admins, developers = (fake_tags.value("module", "workflow"), fake_tags.value("audience", "admins"),
+                                    fake_tags.value("audience", "developers"))
+    response = post_tagged(tagged, tags=[workflow.id, admins.id, developers.id])
+    assert response.status_code == 201
+    body = response.json()
+    assert body["source"] == "content-management/24.4/release-notes/notes.md"
+    assert [(t["category"], t["code"], t["label"], t["active"]) for t in body["tags"]] == [
+        ("module", "workflow", "Workflow", True), ("audience", "admins", "Administrators", True),
+        ("audience", "developers", "Developers", True)]
+    assert body["unlisted"] == []
+    assert tagged.get(f"/documents/{body['id']}").json()["tags"] == body["tags"]
+
+
+@pytest.mark.parametrize("pick, message", [
+    (lambda t: [t.value("module", "workflow").id, t.value("module", "search").id], "Module takes one value only."),
+    (lambda t: [t.value("version", "24.2").id], "Version comes from"),
+    (lambda t: [99999], "Tag value 99999 is not in the master lists."),
+])
+def test_upload_refuses_invalid_extra_tags_and_leaves_nothing(tagged, fake_tags, fake_repository, tmp_path,
+                                                               pick, message):
+    response = post_tagged(tagged, tags=pick(fake_tags))
+    assert response.status_code == 422
+    assert message in response.json()["detail"]
+    assert fake_repository.rows == {}
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def test_a_failed_tagging_undoes_the_upload(tagged, fake_tags, fake_repository, tmp_path):
+    fake_tags.fail_on["set_document_tags"] = psycopg.OperationalError("down")
+    response = post_tagged(tagged, tags=[fake_tags.value("module", "workflow").id])
+    assert response.status_code == 503
+    assert fake_repository.rows == {}
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def test_put_tags_replaces_extra_tags(tagged, fake_tags):
+    document = post_tagged(tagged, tags=[fake_tags.value("module", "workflow").id]).json()
+    search, developers = fake_tags.value("module", "search"), fake_tags.value("audience", "developers")
+
+    response = tagged.put(f"/documents/{document['id']}/tags", json={"value_ids": [search.id, developers.id]})
+    assert response.status_code == 200
+    assert [t["code"] for t in response.json()["tags"]] == ["search", "developers"]
+    assert [t["code"] for t in tagged.get(f"/documents/{document['id']}").json()["tags"]] == ["search", "developers"]
+
+    response = tagged.put(f"/documents/{document['id']}/tags", json={"value_ids": []})
+    assert response.status_code == 200 and response.json()["tags"] == []
+
+
+def test_put_tags_needs_no_admin_key(tagged, fake_tags):
+    document = post_tagged(tagged).json()
+    response = tagged.put(f"/documents/{document['id']}/tags",
+                          json={"value_ids": [fake_tags.value("module", "search").id]})
+    assert response.status_code == 200
+
+
+def test_put_tags_refuses_builtin_or_retired(tagged, fake_tags):
+    document = post_tagged(tagged).json()
+    path = f"/documents/{document['id']}/tags"
+    response = tagged.put(path, json={"value_ids": [fake_tags.value("version", "24.4").id]})
+    assert response.status_code == 422 and "comes from the document's folder" in response.json()["detail"]
+
+    retired = fake_tags.update_value(fake_tags.value("audience", "admins").id, active=False)
+    response = tagged.put(path, json={"value_ids": [retired.id]})
+    assert response.status_code == 422 and "retired" in response.json()["detail"]
+
+    assert tagged.put(path, json={"value_ids": [99999]}).status_code == 422
+    assert tagged.put(path, json={"value_ids": ["x"]}).status_code == 422
+    assert tagged.put(path, json={"value_ids": [], "product": "x"}).status_code == 422
+    assert tagged.put(f"/documents/{uuid.uuid4()}/tags", json={"value_ids": []}).status_code == 404
+    assert tagged.get(path.removesuffix("/tags")).json()["tags"] == []
+
+
+def test_list_includes_tags_and_unlisted(tagged, fake_tags):
+    tagged_doc = post_tagged(tagged, tags=[fake_tags.value("module", "workflow").id]).json()
+    retired_doc = post_tagged(tagged, filename="b.md", version="24.2").json()
+    fake_tags.update_value(fake_tags.value("version", "24.2").id, active=False)
+
+    documents = {d["id"]: d for d in tagged.get("/documents").json()["documents"]}
+    assert [t["code"] for t in documents[tagged_doc["id"]]["tags"]] == ["workflow"]
+    assert documents[tagged_doc["id"]]["unlisted"] == []
+    assert documents[retired_doc["id"]]["unlisted"] == []  # retired is still in the list
+    assert documents[retired_doc["id"]]["tags"] == []
+
+
+def test_an_adopted_file_with_values_not_in_the_lists_is_marked(tmp_path, fake_repository, fake_index, fake_tags):
+    put_by_hand = tmp_path / "acme" / "1.0" / "guide" / "old.md"
+    put_by_hand.parent.mkdir(parents=True)
+    put_by_hand.write_text("old", encoding="utf-8")
+    library = DocumentLibrary(DocumentStorage(tmp_path, max_bytes=1024 * 1024), fake_repository,
+                              fake_index.access(), tags=fake_tags)
+    library.tracker.adopt_untracked()
+    client = TestClient(api.create_app(settings_for(tmp_path), library=library), raise_server_exceptions=False)
+
+    [document] = client.get("/documents").json()["documents"]
+    assert document["source"] == "acme/1.0/guide/old.md"
+    assert document["unlisted"] == ["product", "version", "doc_type"]
+    assert document["tags"] == []
+
+
+def test_list_filters_by_tag(tagged, fake_tags):
+    workflow, search = fake_tags.value("module", "workflow").id, fake_tags.value("module", "search").id
+    admins = fake_tags.value("audience", "admins").id
+    a = post_tagged(tagged, filename="a.md", tags=[workflow, admins]).json()
+    b = post_tagged(tagged, filename="b.md", version="24.2", tags=[search]).json()
+    c = post_tagged(tagged, filename="c.md", version="24.2", doc_type="upgrade-guide").json()
+
+    def ids(*filters):
+        response = tagged.get("/documents", params={"tag": list(filters)})
+        assert response.status_code == 200, response.text
+        return {d["id"] for d in response.json()["documents"]}
+
+    assert ids() == {a["id"], b["id"], c["id"]}
+    assert ids("version:24.2") == {b["id"], c["id"]}
+    assert ids("version:24.2", "version:24.4") == {a["id"], b["id"], c["id"]}  # any value within a category
+    assert ids("version:24.2", "doc_type:release-notes") == {b["id"]}         # every category
+    assert ids("module:workflow", "module:search") == {a["id"], b["id"]}
+    assert ids("module:workflow", "audience:admins") == {a["id"]}
+    assert ids("module:search", "version:24.4") == set()
+
+    fake_tags.update_value(search, active=False)  # a retired value still filters
+    assert ids("module:search") == {b["id"]}
+
+    for bad in ("nope:x", "version", ":x", "version:"):
+        response = tagged.get("/documents", params={"tag": bad})
+        assert response.status_code == 422, bad

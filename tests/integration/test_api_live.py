@@ -42,6 +42,8 @@ def client(tmp_path_factory, monkeypatch_module):
     def drop():
         with psycopg.connect(db_url, autocommit=True) as conn:
             conn.execute(f"DROP TABLE IF EXISTS {TABLE}")
+            for tag_table in ("document_tags", "tag_values", "tag_categories"):  # build_library's, named after it
+                conn.execute(f"DROP TABLE IF EXISTS {DOCUMENTS_TABLE}_{tag_table}")
             conn.execute(f"DROP TABLE IF EXISTS {DOCUMENTS_TABLE}")
 
     drop()

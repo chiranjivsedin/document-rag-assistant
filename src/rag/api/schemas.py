@@ -76,6 +76,16 @@ class IngestConflictResponse(BaseModel):
     job_id: str = Field(description="The job that is already running")
 
 
+class DocumentTagBody(BaseModel):
+    """One of a document's extra tags (product, version and doc_type are the document's own fields)."""
+
+    id: int = Field(description="The tag value's id")
+    category: str = Field(description="The extra category's key")
+    code: str
+    label: str
+    active: bool = Field(description="False = the value is retired (the document keeps it)")
+
+
 class DocumentResponse(BaseModel):
     """One document in the library: its original file and whether it is in the index yet."""
 
@@ -94,6 +104,17 @@ class DocumentResponse(BaseModel):
     chunk_count: int | None
     added_at: datetime
     indexed_at: datetime | None
+    tags: list[DocumentTagBody] = Field(default_factory=list, description="Its extra tags")
+    unlisted: list[str] = Field(
+        default_factory=list,
+        description="product, version or doc_type when the document's value for it isn't in the master list "
+                    "(e.g. a file copied into the folder by hand)")
+
+
+class DocumentTagsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value_ids: list[int] = Field(max_length=200, description="All of the document's extra tags (tag value ids)")
 
 
 class UploadedDocumentResponse(DocumentResponse):

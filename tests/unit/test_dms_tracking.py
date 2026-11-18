@@ -318,7 +318,8 @@ def test_adoption_skips_files_the_library_could_not_serve_safely(library, fake_r
 
 # Building the library at server start
 
-def test_build_library_releases_interrupted_claims_then_adopts(tmp_path, fake_repository, fake_index, monkeypatch):
+def test_build_library_releases_interrupted_claims_then_adopts(tmp_path, fake_repository, fake_index, fake_tags,
+                                                               monkeypatch):
     from rag.config import get_settings
     from rag.dms import library as library_module
 
@@ -332,18 +333,26 @@ def test_build_library_releases_interrupted_claims_then_adopts(tmp_path, fake_re
     monkeypatch.setattr(library_module, "DocumentRepository",
                         lambda url, table: tables.append(table) or fake_repository)
     monkeypatch.setattr(library_module, "index_access", lambda settings: fake_index.access())
+    tag_tables = []
+    tags = fake_tags
+    monkeypatch.setattr(library_module, "TagRepository",
+                        lambda url, documents_table, prefix, chunks_table: tag_tables.append(
+                            (documents_table, prefix, chunks_table)) or tags)
 
     built = library_module.build_library(get_settings({"DATABASE_URL": "postgresql://u:p@h/db",
                                                        "DOCUMENTS_DIR": str(tmp_path)}), table="it_docs")
 
     assert tables == ["it_docs"]
+    assert tag_tables == [("it_docs", "it_docs_", "chunks")]  # a test table gets tag tables of its own
+    assert tags.calls == [("create_tables",), ("seed",)]
+    assert built.tags is tags
     assert fake_repository.rows[interrupted.id].status == "pending"
     assert fake_repository.status_of("acme/1.0/notes/by-hand.md") == "pending"
     assert built.repository is fake_repository
 
 
 def test_build_library_removes_uploads_abandoned_by_a_stopped_server(tmp_path, fake_repository, fake_index,
-                                                                     monkeypatch):
+                                                                     fake_tags, monkeypatch):
     from rag.config import get_settings
     from rag.dms import library as library_module
 
@@ -355,6 +364,7 @@ def test_build_library_removes_uploads_abandoned_by_a_stopped_server(tmp_path, f
     fake_repository.create_table = lambda: None
     monkeypatch.setattr(library_module, "DocumentRepository", lambda url, table: fake_repository)
     monkeypatch.setattr(library_module, "index_access", lambda settings: fake_index.access())
+    monkeypatch.setattr(library_module, "TagRepository", lambda *args, **kwargs: fake_tags)
 
     library_module.build_library(get_settings({"DATABASE_URL": "postgresql://u:p@h/db",
                                                "DOCUMENTS_DIR": str(tmp_path)}))

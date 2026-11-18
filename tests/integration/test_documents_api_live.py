@@ -17,12 +17,14 @@ from rag.dms.index import index_access
 from rag.dms.library import DocumentLibrary
 from rag.dms.repository import DocumentRepository
 from rag.dms.storage import DocumentStorage
+from rag.dms.tags import TagRepository
 
 pytestmark = pytest.mark.integration
 
 LOCAL_DB = "postgresql://rag:rag_local_dev@127.0.0.1:5433/rag"
 DOCUMENTS_TABLE = "it_dms_documents"
 CHUNKS_TABLE = "it_dms_chunks"
+TAG_PREFIX = "it_dms_"
 FORM = {"product": "documentum", "version": "16.2", "doc_type": "release-notes"}
 
 
@@ -32,6 +34,8 @@ def db_url():
 
     def drop():
         with psycopg.connect(url, autocommit=True) as conn:
+            for tag_table in ("document_tags", "tag_values", "tag_categories"):
+                conn.execute(f"DROP TABLE IF EXISTS {TAG_PREFIX}{tag_table}")
             conn.execute(f"DROP TABLE IF EXISTS {DOCUMENTS_TABLE}")
             conn.execute(f"DROP TABLE IF EXISTS {CHUNKS_TABLE}")
 
@@ -93,3 +97,47 @@ def test_upload_list_open_and_delete(client, db_url, tmp_path):
     assert not (tmp_path / document["source"]).exists()
     assert (tmp_path / other["source"]).exists()
     assert [d["id"] for d in client.get("/documents").json()["documents"]] == [other["id"]]
+
+
+def test_upload_with_a_tag_list_and_filter(db_url, tmp_path, monkeypatch):
+    """The master lists in real tables: an upload must use their codes, its extra tags are stored, listed and
+    filtered on."""
+    monkeypatch.setattr(api_app, "check_services", lambda settings, need_chat_model: ["not in this test"])
+    settings = get_settings({"DATABASE_URL": db_url, "DOCUMENTS_DIR": str(tmp_path), "VECTOR_TABLE": CHUNKS_TABLE})
+    repository = DocumentRepository(db_url, table=DOCUMENTS_TABLE)
+    repository.create_table()
+    tags = TagRepository(db_url, documents_table=DOCUMENTS_TABLE, prefix=TAG_PREFIX, chunks_table=CHUNKS_TABLE)
+    tags.create_tables()
+    tags.seed()
+    tags.add_category("module", "Module", multiple=False)
+    workflow = tags.add_value("module", "workflow", "Workflow")
+    library = DocumentLibrary(DocumentStorage(tmp_path, max_bytes=1024 * 1024), repository, index_access(settings),
+                              tags=tags)
+    client = TestClient(api_app.create_app(settings, library=library), raise_server_exceptions=False)
+    form = {"product": "content-management", "version": "24.4", "doc_type": "release-notes"}
+
+    refused = client.post("/documents", data={**form, "version": "9.9"},
+                          files={"file": ("a.md", b"# A", "text/markdown")})
+    assert refused.status_code == 422 and refused.json()["detail"] == "Version '9.9' is not in the master list."
+
+    tagged = client.post("/documents", data={**form, "tag": [str(workflow.id)]},
+                         files={"file": ("a.md", b"# A", "text/markdown")})
+    assert tagged.status_code == 201, tagged.text
+    plain = client.post("/documents", data={**form, "version": "24.2"}, files={"file": ("b.md", b"# B", "text/markdown")})
+    assert plain.status_code == 201
+
+    listing = {d["id"]: d for d in client.get("/documents").json()["documents"]}
+    assert [(t["category"], t["code"]) for t in listing[tagged.json()["id"]]["tags"]] == [("module", "workflow")]
+    assert listing[plain.json()["id"]]["tags"] == [] and listing[plain.json()["id"]]["unlisted"] == []
+
+    def ids(*filters):
+        return {d["id"] for d in client.get("/documents", params={"tag": list(filters)}).json()["documents"]}
+
+    assert ids("module:workflow") == {tagged.json()["id"]}
+    assert ids("version:24.2") == {plain.json()["id"]}
+    assert ids("module:workflow", "version:24.2") == set()
+
+    assert client.put(f"/documents/{plain.json()['id']}/tags", json={"value_ids": [workflow.id]}).status_code == 200
+    assert ids("module:workflow") == {tagged.json()["id"], plain.json()["id"]}
+    assert client.delete(f"/documents/{plain.json()['id']}").status_code == 204  # its tags go with it
+    assert tags.document_tags([plain.json()["id"]]) == {}

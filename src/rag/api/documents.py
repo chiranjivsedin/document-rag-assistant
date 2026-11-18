@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, TypeVar
 
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -23,6 +23,8 @@ from rag.api.schemas import (
     DeletionFailedResponse,
     DocumentListResponse,
     DocumentResponse,
+    DocumentTagBody,
+    DocumentTagsRequest,
     ErrorResponse,
     IngestConflictResponse,
     UploadedDocumentResponse,
@@ -38,6 +40,7 @@ from rag.dms.library import (
 )
 from rag.dms.repository import DocumentRecord
 from rag.dms.storage import DocumentTooLarge, InvalidDocument, UnsafePath
+from rag.dms.tags import BUILTIN_KEYS, TagCategory, TagConflict, TagNotFound, TagValue, builtin_codes
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +74,10 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
     def upload_document(
         response: Response,
         file: Annotated[UploadFile, File(description="A PDF with selectable text, or a Markdown or text file")],
-        product: Annotated[str, Form()],
-        version: Annotated[str, Form()],
-        doc_type: Annotated[str, Form()],
+        product: Annotated[str, Form(description="An active code of the Product master list")],
+        version: Annotated[str, Form(description="An active code of the Version master list")],
+        doc_type: Annotated[str, Form(description="An active code of the Document type master list")],
+        tag: Annotated[list[int] | None, Form(description="Extra tags: active tag value ids (repeat the field)")] = None,
     ) -> UploadedDocumentResponse:
         """Store a file in the documents folder under product/version/doc_type, list it as pending, and start
         indexing it.
@@ -82,7 +86,7 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
         """
         docs = library()
         try:
-            document = _backend(docs.upload, file.file, file.filename or "", product, version, doc_type)
+            document = _backend(docs.upload, file.file, file.filename or "", product, version, doc_type, tag or [])
         except DocumentTooLarge as error:
             raise HTTPException(status_code=413, detail=str(error)) from None
         except InvalidDocument as error:
@@ -96,20 +100,47 @@ def document_routes(settings: Settings, get_library: Callable[[], DocumentLibrar
         logger.info("Uploaded document %s (%s)", document.id, document.source)
         job = start_indexing()
         response.headers["Location"] = f"/documents/{document.id}"
-        return UploadedDocumentResponse(**dataclasses.asdict(document), ingest_job_id=job.id if job else None)
+        body = _bodies(docs, [document])[0]
+        return UploadedDocumentResponse(**body.model_dump(), ingest_job_id=job.id if job else None)
 
-    @router.get("", response_model=DocumentListResponse, responses={503: {"model": ErrorResponse}})
-    def list_documents() -> DocumentListResponse:
-        """Every document in the library, most recently added first."""
-        return DocumentListResponse(documents=[_body(d) for d in _backend(library().list)])
+    @router.get("", response_model=DocumentListResponse,
+                responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    def list_documents(
+        tag: Annotated[list[str] | None, Query(
+            description="category:code, repeatable (e.g. version:24.4). A document must match every category "
+                        "given, and any of the codes given for one category")] = None,
+    ) -> DocumentListResponse:
+        """Every document in the library, most recently added first, with its tags; optionally filtered by tags."""
+        docs = library()
+        try:
+            documents = _backend(docs.list, _parse_tag_filter(tag or []))
+        except TagNotFound as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return DocumentListResponse(documents=_bodies(docs, documents))
 
     @router.get("/{document_id}", response_model=DocumentResponse,
                 responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
     def get_document(document_id: uuid.UUID) -> DocumentResponse:
+        docs = library()
         try:
-            return _body(_backend(library().get, document_id))
+            return _bodies(docs, [_backend(docs.get, document_id)])[0]
         except DocumentNotFound:
             raise HTTPException(status_code=404, detail=UNKNOWN_DOCUMENT) from None
+
+    @router.put("/{document_id}/tags", response_model=DocumentResponse,
+                responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse},
+                           503: {"model": ErrorResponse}})
+    def set_document_tags(document_id: uuid.UUID, body: DocumentTagsRequest) -> DocumentResponse:
+        """Replace the document's extra tags with these values (active values of extra categories; a retired value
+        it already has may stay). Product, version and document type are its folders: re-upload to change them."""
+        docs = library()
+        try:
+            document = _backend(docs.set_tags, document_id, body.value_ids)
+        except DocumentNotFound:
+            raise HTTPException(status_code=404, detail=UNKNOWN_DOCUMENT) from None
+        except (TagNotFound, TagConflict) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return _bodies(docs, [document])[0]
 
     @router.get("/{document_id}/file", response_class=FileResponse,
                 responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
@@ -250,5 +281,31 @@ def _deletion_failed(failed: DeletionFailed) -> JSONResponse:
     return JSONResponse(status_code=status, content={"detail": detail, **dataclasses.asdict(steps)})
 
 
-def _body(document: DocumentRecord) -> DocumentResponse:
-    return DocumentResponse(**dataclasses.asdict(document))
+def _parse_tag_filter(raw: list[str]) -> dict[str, list[str]]:
+    """["version:24.4", "version:24.2", "module:workflow"] -> {"version": ["24.4", "24.2"], "module": ["workflow"]}."""
+    selected: dict[str, list[str]] = {}
+    for item in raw:
+        key, sep, code = item.partition(":")
+        if not sep or not key.strip() or not code.strip():
+            raise HTTPException(status_code=422, detail=f"A tag filter must look like category:code, got {item!r}.")
+        selected.setdefault(key.strip(), []).append(code.strip())
+    return selected
+
+
+def _bodies(library: DocumentLibrary, documents: list[DocumentRecord]) -> list[DocumentResponse]:
+    """The documents as response bodies, with their extra tags and the built-in values missing from the lists."""
+    categories = _backend(library.tag_lists) if documents else []
+    tags = _backend(library.tags_of, documents)
+    return [_body(d, tags.get(d.id, []), categories) for d in documents]
+
+
+def _body(document: DocumentRecord, tags: list[TagValue], categories: list[TagCategory]) -> DocumentResponse:
+    codes = builtin_codes(categories)
+    unlisted = [key for key in BUILTIN_KEYS
+                if key in codes and getattr(document, key) is not None and getattr(document, key) not in codes[key]]
+    return DocumentResponse(
+        **dataclasses.asdict(document),
+        tags=[DocumentTagBody(id=t.id, category=t.category_key, code=t.code, label=t.label, active=t.active)
+              for t in tags],
+        unlisted=unlisted,
+    )

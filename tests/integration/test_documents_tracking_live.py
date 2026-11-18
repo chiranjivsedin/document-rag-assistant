@@ -94,6 +94,8 @@ def db_url():
 
     def drop():
         with psycopg.connect(url, autocommit=True) as conn:
+            for tag_table in ("document_tags", "tag_values", "tag_categories"):  # build_library's, named after it
+                conn.execute(f"DROP TABLE IF EXISTS {DOCUMENTS_TABLE}_{tag_table}")
             conn.execute(f"DROP TABLE IF EXISTS {DOCUMENTS_TABLE}")
             conn.execute(f"DROP TABLE IF EXISTS {CHUNKS_TABLE}")
 
@@ -242,9 +244,11 @@ def test_documents_left_processing_by_a_restart_are_released(setup, db_url):
 def test_build_library_at_startup_releases_and_adopts(db_url, tmp_path):
     settings = get_settings({"DATABASE_URL": db_url, "DOCUMENTS_DIR": str(tmp_path), "VECTOR_TABLE": CHUNKS_TABLE})
     first = build_library(settings, table=DOCUMENTS_TABLE)
-    stuck = first.upload(io.BytesIO(b"text"), "stuck.md", "acme", "1.0", "notes")
+    # An upload uses the master lists' codes (seeded); a file put in by hand may use any folder names.
+    stuck = first.upload(io.BytesIO(b"text"), "stuck.md", "content-management", "24.4", "release-notes")
     first.repository.claim_for_indexing()  # the previous server stopped mid-run
     by_hand = tmp_path / "acme" / "1.0" / "notes" / "by-hand.md"
+    by_hand.parent.mkdir(parents=True)
     by_hand.write_text("put here while the server was down", encoding="utf-8")
 
     restarted = build_library(settings, table=DOCUMENTS_TABLE)

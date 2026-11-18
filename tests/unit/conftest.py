@@ -242,6 +242,12 @@ class FakeTagRepository:
         if method in self.fail_on:
             raise self.fail_on[method]
 
+    def create_tables(self):
+        self.calls.append(("create_tables",))
+
+    def seed(self):
+        self.calls.append(("seed",))
+
     def _new_value(self, key, code, label) -> TagValue:
         value = TagValue(id=self._next_id, category_key=key, code=code, label=label, active=True,
                          sort_order=sum(v.category_key == key for v in self.values.values()))

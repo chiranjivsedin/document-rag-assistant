@@ -116,6 +116,7 @@ def test_exposed_endpoints(client):
     assert set(client.get("/openapi.json").json()["paths"]) == {
         "/health", "/chat", "/documents/ingest", "/documents/ingest/{job_id}",
         "/documents", "/documents/{document_id}", "/documents/{document_id}/file",
+        "/documents/{document_id}/tags",
         "/tags", "/tags/categories", "/tags/categories/{key}/values", "/tags/values/{value_id}",
     }
     assert client.get("/docs").status_code == 200
