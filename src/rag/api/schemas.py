@@ -113,3 +113,49 @@ class DeletionFailedResponse(BaseModel):
     file_deleted: bool = Field(description="The original file is gone (it may already have been missing)")
     chunks_deleted: bool = Field(description="Its passages are out of the index")
     record_deleted: bool = Field(description="It is no longer listed")
+
+
+# Master data for tags (rag.dms.tags, endpoints in rag.api.tags).
+
+class TagValueBody(BaseModel):
+    id: int
+    code: str = Field(description="Stable: what documents store (for product, version and doc_type, the folder name)")
+    label: str = Field(description="The name to show")
+    active: bool = Field(description="False = retired: no new use, still shown and still filtering")
+
+
+class TagCategoryBody(BaseModel):
+    key: str = Field(description="product, version, doc_type, or an extra category's key")
+    label: str
+    builtin: bool = Field(description="product, version and doc_type: the document's folders")
+    multiple: bool = Field(description="Whether a document may have several values")
+    values: list[TagValueBody]  # active and retired, in sort order
+
+
+class TagListResponse(BaseModel):
+    categories: list[TagCategoryBody]  # built-ins first
+
+
+class NewTagCategory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(max_length=100, description="Lowercase letters, digits and hyphens, starting with a letter")
+    label: str = Field(max_length=200)
+    multiple: bool = False
+
+
+class NewTagValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(max_length=100, description="Letters, digits, dots, hyphens, underscores; never renamed")
+    label: str = Field(max_length=200)
+
+
+class TagValueChange(BaseModel):
+    """Only the fields given change; a code never changes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(default=None, max_length=200)
+    active: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=1_000_000)

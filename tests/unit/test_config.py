@@ -30,6 +30,15 @@ def test_question_log_is_off_unless_named(raw, expected):
     assert get_settings({} if raw is None else {"QUESTION_LOG": raw}).question_log == expected
 
 
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, None), ("", None), ("   ", None),
+                                               (" long-random-key ", "long-random-key")])
+def test_admin_key_setting(raw, expected):
+    settings = get_settings({} if raw is None else {"ADMIN_KEY": raw})
+    assert settings.admin_key == expected
+    if expected:
+        assert expected not in repr(settings)  # never in a log line that prints the settings
+
 def test_cors_origins_are_a_comma_separated_list():
     s = get_settings({"API_CORS_ORIGINS": " http://localhost:5173, https://dms.example.com ,"})
     assert s.api_cors_origins == ("http://localhost:5173", "https://dms.example.com")

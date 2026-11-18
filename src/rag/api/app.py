@@ -22,6 +22,7 @@ from rag.api.documents import UploadSizeLimit, document_routes
 from rag.api.errors import backend_failure
 from rag.api.frontend import serve_frontend
 from rag.api.jobs import IngestJob, IngestJobs, JobAlreadyRunning
+from rag.api.tags import tag_routes
 from rag.api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -34,6 +35,7 @@ from rag.api.schemas import (
 )
 from rag.config import Settings, get_settings
 from rag.dms.library import DocumentLibrary, build_library
+from rag.dms.tags import TagRepository
 from rag.generation.prompts import NO_ANSWER
 from rag.health import check_services
 from rag.ingestion.pipeline import IngestReport
@@ -46,8 +48,8 @@ INGEST_FAILED = "Ingestion failed unexpectedly; see the server log."
 
 
 def create_app(settings: Settings | None = None, services: Services | None = None,
-               library: DocumentLibrary | None = None) -> FastAPI:
-    """Build the app. `services` and `library` can be passed in prebuilt (tests); otherwise they are built on
+               library: DocumentLibrary | None = None, tags: TagRepository | None = None) -> FastAPI:
+    """Build the app. `services`, `library` and `tags` can be passed in prebuilt (tests); otherwise they are built on
     first use."""
     settings = settings or get_settings()
     app = FastAPI(title="RAG prototype API", version="0.1.0")
@@ -57,13 +59,13 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.api_cors_origins),
-        allow_methods=["GET", "POST", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-Admin-Key"],
     )
 
     # Built on the first request that needs them, not at startup, so the API (and /health) still
     # starts while Docker or Ollama is down. A failed build isn't cached; the next request retries.
-    built = {"services": services, "library": library}
+    built = {"services": services, "library": library, "tags": tags}
     build_lock = threading.Lock()
 
     def get_services() -> Services:
@@ -77,6 +79,12 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             if built["library"] is None:
                 built["library"] = build_library(settings)
             return built["library"]
+
+    def get_tags() -> TagRepository:
+        with build_lock:
+            if built["tags"] is None:
+                built["tags"] = build_tags(settings)
+            return built["tags"]
 
     jobs = IngestJobs()
     question_log = QuestionLog(Path(settings.question_log)) if settings.question_log else None
@@ -256,9 +264,20 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         return _job_body(job)
 
     app.include_router(document_routes(settings, get_library, jobs, start_indexing_if_idle))
+    app.include_router(tag_routes(settings, get_tags))
     if settings.frontend_dist:
         serve_frontend(app, Path(settings.frontend_dist))  # last: it reserves the paths of the routes above
     return app
+
+
+def build_tags(settings: Settings) -> TagRepository:
+    """The master lists for tags, their tables created and seeded on first use."""
+    if not settings.database_url:
+        raise ValueError("DATABASE_URL is required for the tag lists")
+    tags = TagRepository(settings.database_url, chunks_table=settings.vector_table)
+    tags.create_tables()
+    tags.seed()
+    return tags
 
 
 def failure_message(error: Exception) -> str:
