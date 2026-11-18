@@ -1,6 +1,7 @@
-"""Retrieve the chunks most relevant to a question, optionally limited to a product and/or version."""
+"""Retrieve the chunks most relevant to a question, optionally limited to a product, version and/or document type,
+and to a set of source files (the documents having the tags chosen in chat)."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -29,11 +30,12 @@ class Preference:
 
 
 class KeywordSearch(Protocol):
-    """Up to `limit` chunks matching the question's words within `filters`, best first, each with its cosine distance
-    to `embedding` (the question's) in metadata["distance"]. See retrieval.keyword."""
+    """Up to `limit` chunks matching the question's words within `filters` (and, when given, from these `sources`
+    only), best first, each with its cosine distance to `embedding` (the question's) in metadata["distance"]. See
+    retrieval.keyword."""
 
-    def __call__(self, question: str, embedding: list[float], filters: Mapping[str, str],
-                 limit: int) -> list[Document]: ...
+    def __call__(self, question: str, embedding: list[float], filters: Mapping[str, str], limit: int,
+                 sources: Set[str] | None = None) -> list[Document]: ...
 
 
 @dataclass(frozen=True)
@@ -52,23 +54,35 @@ def retrieve(
     product: str | None = None,
     prefer: Preference | None = None,
     hybrid: Hybrid | None = None,
+    doc_type: str | None = None,
+    sources: Set[str] | None = None,
 ) -> list[Document]:
     """The k most relevant chunks, best first, each with its cosine distance in metadata["distance"]
     (0 = same meaning; larger = less related). Without `hybrid`, best = closest. With `hybrid`, the vector and
     keyword rankings are fused (see fuse()) and each chunk says which search found it in metadata["found_by"]
-    ("vector", "keyword" or "both"). With `prefer`, see choose()."""
-    filters = {name: value for name, value in (("version", version), ("product", product)) if value}
+    ("vector", "keyword" or "both"). With `prefer`, see choose(). With `sources`, only chunks of those source files
+    are searched (an empty set finds nothing)."""
+    filters = {name: value for name, value in (("version", version), ("product", product), ("doc_type", doc_type))
+               if value}
+    if sources is not None and not sources:
+        return []
+    store_filter: dict[str, object] = dict(filters)
+    if sources is not None:
+        store_filter["source"] = {"$in": sorted(sources)}  # the store ANDs the fields of one filter dict
     active = prefer is not None and prefer.slots > 0
     if hybrid is None:
         fetch = k * CANDIDATES_PER_RESULT if active else k
-        results = store.similarity_search_with_score(question, k=fetch, filter=filters or None)
+        results = store.similarity_search_with_score(question, k=fetch, filter=store_filter or None)
         candidates = _with_distance(results)
     else:
         fetch = k * CANDIDATES_PER_RESULT  # deeper lists, so a passage only one search finds can still rank
         embedding = store.embeddings.embed_query(question)  # once, for both searches
-        results = store.similarity_search_with_score_by_vector(embedding, k=fetch, filter=filters or None)
+        results = store.similarity_search_with_score_by_vector(embedding, k=fetch, filter=store_filter or None)
         vector_hits = _with_distance(results)
-        keyword_hits = hybrid.keyword_search(question, embedding, filters, fetch)
+        if sources is None:
+            keyword_hits = hybrid.keyword_search(question, embedding, filters, fetch)
+        else:
+            keyword_hits = hybrid.keyword_search(question, embedding, filters, fetch, sources=sources)
         candidates = fuse([vector_hits, keyword_hits], hybrid.rrf_k)
         by_vector = {_identity(doc) for doc in vector_hits}
         by_keyword = {_identity(doc) for doc in keyword_hits}

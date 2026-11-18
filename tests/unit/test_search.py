@@ -248,3 +248,45 @@ def test_preference_gap_is_measured_from_the_closest_candidate_not_the_first():
     candidates = [doc("kw", 0.50), doc("v0", 0.20), doc("v1", 0.21), doc("notes", 0.40, doc_type="release-notes")]
     assert names(choose(candidates, 3, NOTES)) == ["kw", "v0", "v1"]  # 0.40 is more than 0.15 behind 0.20
     assert names(choose(candidates, 3, Preference("release-notes", 2, 0.25))) == ["kw", "v0", "notes"]
+
+
+# Document type and tag filters (tags reach retrieval as the set of source files allowed)
+
+def test_doc_type_filter_reaches_both_searches():
+    store = FakeStore([])
+    retrieve(store, "q", doc_type="release-notes", version="24.4")
+    assert store.calls[0]["filter"] == {"version": "24.4", "doc_type": "release-notes"}
+
+    store, keywords = FakeHybridStore([]), FakeKeywordSearch([])
+    retrieve(store, "q", doc_type="release-notes", hybrid=Hybrid(keywords))
+    assert store.calls[0]["filter"] == {"doc_type": "release-notes"}
+    assert keywords.calls[0]["filters"] == {"doc_type": "release-notes"}
+
+
+class FakeKeywordSearchWithSources(FakeKeywordSearch):
+    def __call__(self, question, embedding, filters, limit, sources=None):
+        self.calls.append({"filters": filters, "limit": limit, "sources": sources})
+        return self.hits
+
+
+def test_sources_filter_reaches_both_searches():
+    store = FakeStore([])
+    retrieve(store, "q", version="24.4", sources={"b.md", "a.md"})
+    assert store.calls[0]["filter"] == {"version": "24.4", "source": {"$in": ["a.md", "b.md"]}}
+
+    store, keywords = FakeHybridStore([]), FakeKeywordSearchWithSources([])
+    retrieve(store, "q", sources={"b.md", "a.md"}, hybrid=Hybrid(keywords))
+    assert store.calls[0]["filter"] == {"source": {"$in": ["a.md", "b.md"]}}
+    assert keywords.calls[0] == {"filters": {}, "limit": 12, "sources": {"a.md", "b.md"}}
+
+
+def test_no_sources_filter_leaves_the_keyword_search_call_unchanged():
+    store, keywords = FakeHybridStore([]), FakeKeywordSearch([])  # its __call__ takes no sources
+    retrieve(store, "q", hybrid=Hybrid(keywords))
+    assert keywords.calls[0]["filters"] == {}
+
+
+def test_an_empty_sources_set_searches_nothing():
+    store, keywords = FakeHybridStore(vector_results(3)), FakeKeywordSearchWithSources([])
+    assert retrieve(store, "q", sources=set(), hybrid=Hybrid(keywords)) == []
+    assert store.calls == [] and keywords.calls == []

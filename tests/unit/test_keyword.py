@@ -154,3 +154,13 @@ def test_ensure_explains_a_missing_ownership(monkeypatch):
     use_connection(monkeypatch, FakeConnection(answers=[False], error=errors.InsufficientPrivilege("must be owner")))
     with pytest.raises(TextSearchSetupError, match="doesn't own it.*HYBRID_SEARCH=false"):
         ensure_text_search("postgresql://db", "chunks")
+
+
+def test_a_sources_filter_is_one_array_parameter_in_every_part_of_the_query():
+    text = sql_text(search_query("chunks", COLUMNS, {"version": "23.4"}, with_sources=True))
+    scope = 'TRUE AND c."version" = %(filter_version)s AND c."source" = ANY(%(sources)s)'
+    assert text.count(scope) == 3
+    params = search_params("q", [0.5], {"version": "23.4"}, 5, sources={"b.md", "a.md"})
+    assert params["sources"] == ["a.md", "b.md"]
+    assert "sources" not in search_params("q", [0.5], {}, 5)
+    assert "ANY" not in sql_text(search_query("chunks", COLUMNS, {}))

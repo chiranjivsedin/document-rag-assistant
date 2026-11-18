@@ -4,8 +4,10 @@ Builds the vector store and chat model once, runs an ingest against what the dat
 holds, and answers a question, so each entry point doesn't repeat this glue.
 """
 
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
@@ -18,6 +20,12 @@ from rag.generation.prompts import NO_ANSWER
 from rag.ingestion.pipeline import IngestReport, ingest
 from rag.providers import get_chat_model, get_embeddings, get_keyword_search, get_vector_store
 from rag.retrieval.search import DEFAULT_K, Hybrid, KeywordSearch, Preference, retrieve
+
+
+class TagLists(Protocol):
+    """What chat needs from the tag lists (rag.dms.tags.TagRepository)."""
+
+    def sources_with_tags(self, selected: Mapping[str, Sequence[str]]) -> set[str]: ...
 
 
 @dataclass(frozen=True)
@@ -50,12 +58,19 @@ def ask(
     k: int = DEFAULT_K,
     version: str | None = None,
     product: str | None = None,
+    doc_type: str | None = None,
+    sources: Set[str] | None = None,
 ) -> Answer:
     """Retrieve passages and answer from them; `sources` is empty when the model found no answer, `retrieved` always
-    holds every passage the model was given."""
+    holds every passage the model was given. With `sources` (from tag_sources()), only those documents are searched;
+    an empty set means no document has the chosen tags, so the answer is the fixed "I don't know" reply, without
+    searching or calling the model."""
     if services.chat_model is None:
         raise ValueError("ask() needs services built with a chat model")
-    docs = find_passages(services, question, k=k, version=version, product=product)
+    if sources is not None and not sources:
+        return Answer(text=NO_ANSWER, sources=[], retrieved=[])
+    docs = find_passages(services, question, k=k, version=version, product=product, doc_type=doc_type,
+                         sources=sources)
     result = answer(question, docs, services.chat_model)
     return Answer(text=result.text, sources=sources_to_show(result.text, docs), retrieved=docs)
 
@@ -66,9 +81,11 @@ def find_passages(
     k: int = DEFAULT_K,
     version: str | None = None,
     product: str | None = None,
+    doc_type: str | None = None,
+    sources: Set[str] | None = None,
 ) -> list[Document]:
     """The k passages to answer from, best first: vector search, merged with keyword search when HYBRID_SEARCH is
-    on, then the configured document-type preference."""
+    on, then the configured document-type preference. `sources` limits the search to those files."""
     settings = services.settings
     prefer = None
     if settings.preferred_doc_type and settings.preferred_doc_type_slots > 0:
@@ -77,7 +94,17 @@ def find_passages(
     hybrid = None
     if settings.hybrid_search and services.keyword_search is not None:
         hybrid = Hybrid(services.keyword_search, settings.hybrid_rrf_k)
-    return retrieve(services.store, question, k=k, version=version, product=product, prefer=prefer, hybrid=hybrid)
+    return retrieve(services.store, question, k=k, version=version, product=product, prefer=prefer, hybrid=hybrid,
+                    doc_type=doc_type, sources=sources)
+
+
+def tag_sources(tags: TagLists, selected: Mapping[str, Sequence[str]] | None) -> set[str] | None:
+    """The source files of the documents having the chosen extra tags (every category, any of its values), or None
+    when no value is chosen (no filter). Raises the tag lists' TagNotFound for a category that isn't an extra one."""
+    chosen = {key: list(codes) for key, codes in (selected or {}).items() if codes}
+    if not chosen:
+        return None
+    return tags.sources_with_tags(chosen)
 
 
 def sources_to_show(answer_text: str, docs: list[Document]) -> list[Document]:

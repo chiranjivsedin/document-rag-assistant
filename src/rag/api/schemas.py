@@ -10,6 +10,7 @@ from rag.retrieval.search import DEFAULT_K
 
 # Optional filter: surrounding spaces trimmed; an empty value means "no filter", as in retrieve().
 Filter = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
+TagKey = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
 
 
 class ErrorResponse(BaseModel):
@@ -29,6 +30,11 @@ class ChatRequest(BaseModel):
     question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
     product: Filter | None = None
     version: Filter | None = None
+    doc_type: Filter | None = None
+    tags: dict[TagKey, Annotated[list[Filter], Field(max_length=100)]] | None = Field(
+        default=None, max_length=20,
+        description="Extra tags: category key -> codes. Only documents having, for every category given, one of its "
+                    "codes are searched; an empty list means no filter for that category")
     k: int = Field(default=DEFAULT_K, ge=1, le=20, description="Number of passages to retrieve")
 
 

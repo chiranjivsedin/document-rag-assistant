@@ -12,7 +12,7 @@ The text is indexed in a generated column (`TSV_COLUMN`), filled by PostgreSQL i
 so ingestion doesn't change and existing chunks need no re-ingest.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from typing import Any
 
 from langchain_core.documents import Document
@@ -66,15 +66,18 @@ LIMIT %(limit)s
 """
 
 
-def search_query(table: str, metadata_columns: Sequence[str], filters: Mapping[str, str]) -> sql.Composed:
+def search_query(table: str, metadata_columns: Sequence[str], filters: Mapping[str, str],
+                 with_sources: bool = False) -> sql.Composed:
     """The keyword search statement. Only identifiers we choose go into the SQL text; the question, the
-    embedding, the filter values and the limit are parameters."""
+    embedding, the filter values, the allowed source files (`with_sources`) and the limit are parameters."""
     unknown = set(filters) - set(metadata_columns)
     if unknown:
         raise ValueError(f"Can't filter on {sorted(unknown)}: not a metadata column")
     scope = sql.SQL(" AND ").join(
         [sql.SQL("TRUE")]
         + [sql.SQL("c.{} = {}").format(sql.Identifier(name), sql.Placeholder(f"filter_{name}")) for name in filters]
+        + ([sql.SQL("c.{} = ANY({})").format(sql.Identifier("source"), sql.Placeholder("sources"))]
+           if with_sources else [])
     )
     selected = [ID_COLUMN, CONTENT_COLUMN, METADATA_JSON_COLUMN, *metadata_columns]
     return sql.SQL(_SEARCH).format(
@@ -88,13 +91,17 @@ def search_query(table: str, metadata_columns: Sequence[str], filters: Mapping[s
     )
 
 
-def search_params(question: str, embedding: Sequence[float], filters: Mapping[str, str], limit: int) -> dict[str, Any]:
-    return {
+def search_params(question: str, embedding: Sequence[float], filters: Mapping[str, str], limit: int,
+                  sources: Set[str] | None = None) -> dict[str, Any]:
+    params = {
         "question": question,
         "embedding": "[" + ",".join(repr(float(value)) for value in embedding) + "]",  # pgvector's text form
         "limit": limit,
         **{f"filter_{name}": value for name, value in filters.items()},
     }
+    if sources is not None:
+        params["sources"] = sorted(sources)
+    return params
 
 
 def keyword_search(
@@ -105,15 +112,16 @@ def keyword_search(
     embedding: Sequence[float],
     filters: Mapping[str, str],
     limit: int,
+    sources: Set[str] | None = None,
 ) -> list[Document]:
     """Up to `limit` chunks sharing words with the question, best keyword score first, within `filters` (column ->
-    value). Each Document is shaped like the vector store's: its id, metadata from the JSON and metadata columns,
-    plus metadata["distance"] (cosine distance to `embedding`)."""
-    if limit <= 0 or not question.strip():
+    value) and, when given, from these `sources` only. Each Document is shaped like the vector store's: its id,
+    metadata from the JSON and metadata columns, plus metadata["distance"] (cosine distance to `embedding`)."""
+    if limit <= 0 or not question.strip() or (sources is not None and not sources):
         return []
-    query = search_query(table, metadata_columns, filters)
+    query = search_query(table, metadata_columns, filters, with_sources=sources is not None)
     with connect(database_url) as conn, conn.cursor(row_factory=dict_row) as cursor:
-        rows = cursor.execute(query, search_params(question, embedding, filters, limit)).fetchall()
+        rows = cursor.execute(query, search_params(question, embedding, filters, limit, sources)).fetchall()
     return [to_document(row, metadata_columns) for row in rows]
 
 

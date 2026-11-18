@@ -13,7 +13,7 @@ confidential as the documents. It only grows: archive or truncate it with the ot
 import json
 import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,6 +60,8 @@ def log_entry(
     passages: Sequence[Document] = (),
     error: str | None = None,
     now: datetime | None = None,
+    doc_type: str | None = None,
+    tags: Mapping[str, Sequence[str]] | None = None,
 ) -> dict:
     """One log entry. `outcome`: "answered", "no_answer", "unavailable" or "error"; `passages`: every passage given to
     the model, numbered as the answer cites them; `error`: a client-safe reason (never an exception's message)."""
@@ -69,6 +71,8 @@ def log_entry(
         "question": question,
         "product": product,
         "version": version,
+        "doc_type": doc_type,
+        "tags": None if tags is None else {key: list(codes) for key, codes in tags.items()},
         "k": k,
         "model": model,
         "outcome": outcome,

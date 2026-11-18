@@ -102,6 +102,15 @@ def test_an_issue_id_is_found_and_filters_are_respected(env):
     assert _search(env, "CS-123456", {"product": "other-product"}) == []
 
 
+def test_a_sources_set_limits_the_search_to_those_files(env):
+    question = "Is there a workaround for CS-123456?"
+    embedding = env["embeddings"].embed_query(question)
+    only_2_0 = {"acme-dms/2.0/release-notes/notes.md"}
+    hits = env["search"](question, embedding, {}, 5, sources=only_2_0)
+    assert hits and {d.metadata["source"] for d in hits} == only_2_0
+    assert env["search"](question, embedding, {"version": "1.0"}, 5, sources=only_2_0) == []
+
+
 @pytest.mark.parametrize("question", ["Is Oracle 21c supported?", "Which Postgres 13.x releases work?"])
 def test_versions_and_names_are_found(env, question):
     assert "Supported databases" in _search(env, question, {"version": "1.0"})[0].page_content

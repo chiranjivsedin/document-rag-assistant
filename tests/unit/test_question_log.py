@@ -28,7 +28,8 @@ def entry(**overrides):
 def test_an_entry_holds_the_question_the_outcome_and_every_passage():
     assert entry() == {
         "time": "2026-11-11T10:30:05+00:00",
-        "question": "What is deprecated?", "product": "acme", "version": "1.0", "k": 3, "model": "gemma3:4b",
+        "question": "What is deprecated?", "product": "acme", "version": "1.0", "doc_type": None, "tags": None,
+        "k": 3, "model": "gemma3:4b",
         "outcome": "answered", "status": 200, "elapsed_ms": 1234,
         "answer": "Classic Desktop is deprecated [1][3].", "error": None,
         "passages": [
@@ -72,3 +73,10 @@ def test_a_log_that_cant_be_written_warns_once_and_never_raises(tmp_path, caplog
         log.write(entry())
         log.write(entry())
     assert len([r for r in caplog.records if "question log" in r.getMessage()]) == 1
+
+
+def test_question_log_records_doc_type_and_tags():
+    logged = entry(doc_type="release-notes", tags={"module": ["workflow", "search"]})
+    assert logged["doc_type"] == "release-notes"
+    assert logged["tags"] == {"module": ["workflow", "search"]}
+    assert entry()["doc_type"] is None and entry()["tags"] is None

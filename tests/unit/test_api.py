@@ -604,3 +604,105 @@ def test_ingest_builds_services_lazily(checks, docs_settings, monkeypatch):
     assert builds == []
     wait_until_finished(client, client.post("/documents/ingest").json()["job_id"])
     assert builds == [docs_settings]
+
+
+# --- tag filters ----------------------------------------------------------------------------------
+
+def tag_client(fake_tags, results=PASSAGES, reply="Classic Desktop is deprecated [1].", **options):
+    store = FakeStore(list(results))
+    services = Services(settings=SETTINGS, store=store, chat_model=FakeListChatModel(responses=[reply]))
+    app = api.create_app(SETTINGS, services=services, tags=fake_tags, **options)
+    return TestClient(app, raise_server_exceptions=False), store
+
+
+@pytest.fixture
+def module_tags(fake_tags, fake_repository):
+    """Documents a.md (module workflow) and b.md (module search) in the fake library; module is an extra category."""
+    from rag.dms.repository import NewDocument
+
+    fake_tags.add_category("module", "Module", multiple=False)
+    workflow = fake_tags.add_value("module", "workflow", "Workflow")
+    search = fake_tags.add_value("module", "search", "Search")
+    for name, value in (("a.md", workflow), ("b.md", search)):
+        record = fake_repository.add(NewDocument(
+            source=f"acme/1.0/release-notes/{name}", filename=name, content_type="text/markdown", size_bytes=1,
+            file_hash="a" * 64, product="acme", version="1.0", doc_type="release-notes"))
+        fake_tags.set_document_tags(record.id, [value.id])
+    return fake_tags
+
+
+def test_chat_passes_doc_type_and_tags(checks, module_tags):
+    client, store = tag_client(module_tags)
+    response = client.post("/chat", json={"question": "Q?", "doc_type": " release-notes ",
+                                          "tags": {"module": ["workflow"]}})
+    assert response.status_code == 200
+    assert store.searches[0]["filter"] == {"doc_type": "release-notes",
+                                           "source": {"$in": ["acme/1.0/release-notes/a.md"]}}
+
+
+def test_chat_without_tags_never_builds_the_tag_lists(checks, monkeypatch):
+    def unavailable(settings):
+        raise AssertionError("the tag lists are not needed")
+
+    monkeypatch.setattr(api, "build_tags", unavailable)
+    client, store = make_client()
+    assert client.post("/chat", json={"question": "Q?", "tags": {}}).status_code == 200
+    assert client.post("/chat", json={"question": "Q?", "tags": {"module": []}}).status_code == 200
+
+
+def test_tag_filter_with_no_matching_document_answers_without_the_model(checks, module_tags, tmp_path):
+    log = tmp_path / "questions.jsonl"
+    store = FakeStore(list(PASSAGES))
+    services = Services(settings=SETTINGS, store=store, chat_model=FakeListChatModel(responses=[]))  # would fail
+    settings = get_settings({"DATABASE_URL": SETTINGS.database_url, "QUESTION_LOG": str(log)})
+    client = TestClient(api.create_app(settings, services=services, tags=module_tags), raise_server_exceptions=False)
+
+    response = client.post("/chat", json={"question": "Q?", "tags": {"module": ["nothing-has-this"]}})
+    assert response.status_code == 200
+    assert response.json()["answer"] == NO_ANSWER and response.json()["no_answer"] is True
+    assert response.json()["sources"] == []
+    assert store.searches == []
+    [logged] = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert logged["outcome"] == "no_answer" and logged["tags"] == {"module": ["nothing-has-this"]}
+
+
+def test_retired_value_still_filters(checks, module_tags):
+    module_tags.update_value(module_tags.value("module", "search").id, active=False)
+    client, store = tag_client(module_tags)
+    response = client.post("/chat", json={"question": "Q?", "tags": {"module": ["search"]}})
+    assert response.status_code == 200
+    assert store.searches[0]["filter"] == {"source": {"$in": ["acme/1.0/release-notes/b.md"]}}
+
+
+@pytest.mark.parametrize("tags", [{"nope": ["x"]}, {"version": ["1.0"]}])
+def test_chat_rejects_unknown_tag_category(checks, module_tags, tags):
+    client, store = tag_client(module_tags)
+    response = client.post("/chat", json={"question": "Q?", "tags": tags})
+    assert response.status_code == 422
+    assert store.searches == []
+
+
+@pytest.mark.parametrize("tags", [["module"], {"module": "workflow"}, {"module": [1]}, {"module": ["x" * 101]}])
+def test_chat_rejects_malformed_tags(checks, module_tags, tags):
+    client, _ = tag_client(module_tags)
+    assert client.post("/chat", json={"question": "Q?", "tags": tags}).status_code == 422
+
+
+def test_chat_tag_lookup_outage_is_503(checks, module_tags):
+    module_tags.fail_on["sources_with_tags"] = psycopg.OperationalError("down")
+    client, store = tag_client(module_tags)
+    response = client.post("/chat", json={"question": "Q?", "tags": {"module": ["workflow"]}})
+    assert response.status_code == 503
+    assert store.searches == []
+
+
+def test_question_log_records_doc_type_and_tags_from_chat(checks, module_tags, tmp_path):
+    log = tmp_path / "questions.jsonl"
+    store = FakeStore(list(PASSAGES))
+    services = Services(settings=SETTINGS, store=store,
+                        chat_model=FakeListChatModel(responses=["Classic Desktop is deprecated [1]."]))
+    settings = get_settings({"DATABASE_URL": SETTINGS.database_url, "QUESTION_LOG": str(log)})
+    client = TestClient(api.create_app(settings, services=services, tags=module_tags), raise_server_exceptions=False)
+    client.post("/chat", json={"question": "Q?", "doc_type": "release-notes", "tags": {"module": ["workflow"]}})
+    [logged] = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert logged["doc_type"] == "release-notes" and logged["tags"] == {"module": ["workflow"]}

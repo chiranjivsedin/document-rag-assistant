@@ -35,12 +35,12 @@ from rag.api.schemas import (
 )
 from rag.config import Settings, get_settings
 from rag.dms.library import DocumentLibrary, build_library
-from rag.dms.tags import TagRepository
+from rag.dms.tags import TagNotFound, TagRepository
 from rag.generation.prompts import NO_ANSWER
 from rag.health import check_services
 from rag.ingestion.pipeline import IngestReport
 from rag.question_log import QuestionLog, log_entry
-from rag.service import Services, ask, build_services, run_ingest
+from rag.service import Services, ask, build_services, run_ingest, tag_sources
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         responses={502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     )
     def chat(request: ChatRequest) -> ChatResponse:
-        """Answer a question from the indexed documents, optionally limited to a product and/or version."""
+        """Answer a question from the indexed documents, optionally limited to a product, version, document type
+        and extra tags."""
         started = time.monotonic()
 
         def elapsed_ms() -> int:
@@ -124,7 +125,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
                    passages: list[Document] | None = None, error: str | None = None) -> None:
             if question_log is not None:
                 question_log.write(log_entry(
-                    question=request.question, product=request.product, version=request.version, k=request.k,
+                    question=request.question, product=request.product, version=request.version,
+                    doc_type=request.doc_type, tags=request.tags, k=request.k,
                     model=settings.llm_model, outcome=outcome, status=status, elapsed_ms=elapsed,
                     answer=answer, passages=passages or [], error=error,
                 ))
@@ -136,8 +138,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
         started = time.monotonic()  # elapsed_ms covers answering, as before, not the service checks
         try:
-            result = ask(get_services(), request.question, k=request.k,
-                         version=request.version, product=request.product)
+            sources = tag_sources(get_tags(), request.tags) if any((request.tags or {}).values()) else None
+            result = ask(get_services(), request.question, k=request.k, version=request.version,
+                         product=request.product, doc_type=request.doc_type, sources=sources)
+        except TagNotFound as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
         except Exception as error:
             failure = backend_failure(error)
             if failure is None:

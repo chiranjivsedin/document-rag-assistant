@@ -206,3 +206,40 @@ def test_find_passages_defaults_to_three_passages():
     docs = find_passages(Services(settings=settings, store=store, chat_model=None), "Q?")
     assert len(docs) == 3
     assert store.searches[0]["k"] == 3
+
+
+def test_ask_with_an_empty_sources_set_answers_i_dont_know_without_the_model():
+    store = FakeStore(PASSAGES)
+    services = Services(settings=SETTINGS, store=store, chat_model=FakeListChatModel(responses=[]))  # would fail
+    result = ask(services, "What is deprecated?", sources=set())
+    assert result.text == NO_ANSWER and result.sources == [] and result.retrieved == []
+    assert store.searches == []
+
+
+def test_ask_passes_doc_type_and_sources_to_retrieval():
+    store = FakeStore(PASSAGES)
+    ask(services_with(store, "Classic Desktop is deprecated [1]."), "Q?", doc_type="release-notes",
+        sources={"acme/1.0/deprecated.md"})
+    assert store.searches[0]["filter"] == {"doc_type": "release-notes",
+                                           "source": {"$in": ["acme/1.0/deprecated.md"]}}
+
+
+class FakeTagLists:
+    def __init__(self, sources):
+        self.sources = sources
+        self.calls = []
+
+    def sources_with_tags(self, selected):
+        self.calls.append(selected)
+        return self.sources
+
+
+def test_tag_sources_resolves_only_chosen_values():
+    from rag.service import tag_sources
+
+    tags = FakeTagLists({"a.md"})
+    assert tag_sources(tags, None) is None
+    assert tag_sources(tags, {"module": []}) is None  # nothing chosen: no filter
+    assert tags.calls == []
+    assert tag_sources(tags, {"module": ["workflow"], "audience": []}) == {"a.md"}
+    assert tags.calls == [{"module": ["workflow"]}]
