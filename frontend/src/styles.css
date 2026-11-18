@@ -1889,6 +1889,38 @@ textarea {
   padding: 0;
   margin-bottom: 5px;
 }
+/* Tags admin screen */
+.tags-page .tag-category {
+  display: grid;
+  gap: 12px;
+}
+.admin-key,
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+.admin-key .hint {
+  flex-basis: 100%;
+  margin: 0;
+}
+.inline-form input {
+  height: 34px;
+  min-width: 0;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+.inline-form input[aria-invalid="true"] {
+  border-color: var(--bad);
+}
+.tag-row-retired td {
+  color: var(--text-3);
+}
+
 .edit-tags {
   display: grid;
   gap: 10px;

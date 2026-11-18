@@ -11,6 +11,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PlusIcon,
+  StackIcon,
   SunIcon,
   TagIcon,
 } from "./components/Icons";
@@ -20,6 +21,7 @@ import { turnElementId } from "./features/chat/ChatTurn";
 import { IngestPage } from "./features/ingest/IngestPage";
 import { DocumentsPage } from "./features/library/DocumentsPage";
 import { ReleaseNotesPage } from "./features/releases/ReleaseNotesPage";
+import { TagsPage } from "./features/tags/TagsPage";
 import { TagsProvider } from "./features/tags/useTags";
 
 // One tab per area of the app. The current tab lives in the URL hash (#chat, #documents, ...), so it survives a
@@ -28,6 +30,7 @@ export const TABS = [
   { id: "chat", label: "Chat" },
   { id: "versions", label: "Release notes" },
   { id: "documents", label: "Documents" },
+  { id: "tags", label: "Tags" },
   { id: "ingestion", label: "Ingestion" },
 ] as const;
 
@@ -37,6 +40,7 @@ const ICONS: Record<TabId, ComponentType> = {
   chat: ChatIcon,
   documents: FolderIcon,
   versions: TagIcon,
+  tags: StackIcon,
   ingestion: IndexIcon,
 };
 
@@ -104,6 +108,7 @@ export function App() {
     chat: <ChatPage key={chatSession} prefill={prefill} onHistoryChange={setHistory} />,
     documents: <DocumentsPage active={current === "documents"} />,
     versions: <ReleaseNotesPage onAsk={askInChat} />,
+    tags: <TagsPage />,
     ingestion: <IngestPage />,
   };
 
