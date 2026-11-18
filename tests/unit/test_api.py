@@ -648,6 +648,7 @@ def test_chat_without_tags_never_builds_the_tag_lists(checks, monkeypatch):
     client, store = make_client()
     assert client.post("/chat", json={"question": "Q?", "tags": {}}).status_code == 200
     assert client.post("/chat", json={"question": "Q?", "tags": {"module": []}}).status_code == 200
+    assert client.post("/chat", json={"question": "Q?", "tags": {"module": ["  "]}}).status_code == 200
 
 
 def test_tag_filter_with_no_matching_document_answers_without_the_model(checks, module_tags, tmp_path):

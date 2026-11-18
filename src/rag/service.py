@@ -101,7 +101,8 @@ def find_passages(
 def tag_sources(tags: TagLists, selected: Mapping[str, Sequence[str]] | None) -> set[str] | None:
     """The source files of the documents having the chosen extra tags (every category, any of its values), or None
     when no value is chosen (no filter). Raises the tag lists' TagNotFound for a category that isn't an extra one."""
-    chosen = {key: list(codes) for key, codes in (selected or {}).items() if codes}
+    chosen = {key: [code for code in codes if code] for key, codes in (selected or {}).items()}
+    chosen = {key: codes for key, codes in chosen.items() if codes}
     if not chosen:
         return None
     return tags.sources_with_tags(chosen)

@@ -240,6 +240,7 @@ def test_tag_sources_resolves_only_chosen_values():
     tags = FakeTagLists({"a.md"})
     assert tag_sources(tags, None) is None
     assert tag_sources(tags, {"module": []}) is None  # nothing chosen: no filter
+    assert tag_sources(tags, {"module": [""]}) is None
     assert tags.calls == []
     assert tag_sources(tags, {"module": ["workflow"], "audience": []}) == {"a.md"}
     assert tags.calls == [{"module": ["workflow"]}]

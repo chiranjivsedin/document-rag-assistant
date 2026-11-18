@@ -288,6 +288,9 @@ Interactive documentation (try every endpoint from the browser) is at `http://12
 | `GET /documents/{id}` | One document | 200 |
 | `GET /documents/{id}/file` | The original file: shown in the browser, or `?download=true` to save it | 200 |
 | `DELETE /documents/{id}` | Deletes the file, its passages in the index and its record | 204 |
+| `PUT /documents/{id}/tags` | Replaces a document's extra tags (section 7.7) | 200 with the document |
+| `GET /tags` | The tag lists: categories with their values | 200 |
+| `POST /tags/categories`, `POST /tags/categories/{key}/values`, `PATCH /tags/values/{id}`, `DELETE /tags/values/{id}` | Change the tag lists; need the admin key (section 7.7) | 201 / 200 / 204 |
 
 ### 7.1 Health
 
@@ -320,7 +323,8 @@ POST /chat
 (Illustrative values.) Rules, as implemented in `schemas.py`:
 
 - `question` is required, 1–2000 characters after trimming spaces.
-- `product` and `version` are optional filters (at most 100 characters); an empty value means "no filter".
+- `product`, `version` and `doc_type` are optional filters (at most 100 characters); an empty value means "no filter".
+- `tags` is an optional filter on extra tags: `{"module": ["workflow", "search"]}` searches only documents that, for every category given, have one of its codes (retired values count). A category that isn't an extra one answers 422. If no document has the chosen tags, the "I don't know" reply comes back without searching or calling the model.
 - `k` is the number of passages to retrieve, 1–20, default 5.
 - Unknown fields are rejected, so a misspelt filter such as `versoin` fails with 422 instead of being ignored.
 - `sources[n].number` matches the `[n]` citations in `answer`. `excerpt` is the whole passage the model was given, so the answer can be checked against it.
@@ -465,6 +469,19 @@ A delete that stops part-way answers 500 (or 503 when the database is down) with
 | 503 | `DATABASE_URL` isn't set | "DATABASE_URL is not set, so documents can't be stored." |
 | 503 | The database stops responding | "Ollama or the database stopped responding. Check GET /health." |
 
+### 7.7 Tags (master data)
+
+Documents are described only with values from managed lists, so the same thing is always spelled the same way. The code is in `src/rag/dms/tags.py` and `src/rag/api/tags.py`; the web app's **Tags** screen manages the lists, and Upload, Documents, Chat and Release notes offer only their values.
+
+- **Categories:** the three built-ins, Product (`product`), Version (`version`) and Document type (`doc_type`), are the document's folders and its chunks' columns, as before: the lists only decide which values an upload may use. Extra categories (e.g. Module, Audience) are added on the Tags screen; a document's extra tags are stored in `document_tags`. A category takes one value per document, or several (`multiple`; never for a built-in).
+- **Values:** a `code` (stable, a valid folder name, never renamed: what documents store) and a `label` (shown, renamable). No two values of a category share a code, or an active label, ignoring case and extra spaces. Versions sort numerically.
+- **Starting lists** (created in an empty database only, never again): Product `content-management`; Version 16.2, 16.4, 16.6, 16.7, 20.2, 20.3, 20.4, 21.1–21.4, 22.1–22.4, 23.1–23.4, 24.1–24.4, 25.1–25.4, 26.1, 26.2, 26.4; Document type `release-notes`, `installation-guide`, `upgrade-guide`, `admin-guide`. Values already used by existing documents are not imported: such documents keep working and are shown "not in master list" (`unlisted` in `GET /documents`).
+- **Retiring:** a value is retired (`active: false`), which hides it from upload and tagging; documents keep it and filters still find it. Only a value nothing uses (no document, no document's tag, no chunk) can be deleted; otherwise 409.
+- **Uploads** must use active codes for product, version and doc_type (422 "Version '9.9' is not in the master list." or "… is retired; choose another."), and may add extra tags (`tag`, repeated, value ids).
+- **Tagging a document** (`PUT /documents/{id}/tags`, `{"value_ids": [...]}`) replaces its extra tags; it needs no admin key. A retired value it already has may stay. Product, version and type can't be changed (they are folders): re-upload instead.
+- **Filtering the library:** `GET /documents?tag=version:24.4&tag=module:workflow` (every category given must match, any value within one).
+- **Admin key:** the list-changing endpoints need the header `X-Admin-Key` equal to the `ADMIN_KEY` setting (compared in constant time). Without `ADMIN_KEY` they answer 403 "Admin is disabled on this server."; a missing or wrong key gets 401. The key is never read from the URL, echoed or logged; the web app keeps it in the browser tab's session storage only.
+
 ---
 
 ## 8. Configuration
@@ -488,6 +505,7 @@ Settings come from `.env` (copy `.env.example`) or from environment variables; r
 | `DATABASE_URL` | none (required) | `.env.example` points it at the local Docker database: `postgresql://rag:…@127.0.0.1:5433/rag` |
 | `API_CORS_ORIGINS` | `http://localhost:5173` | Browser origins allowed to call the HTTP API, comma-separated |
 | `FRONTEND_DIST` | empty (off) | A built web app (`frontend/dist`) for the API to serve at `/`; relative to where the API is started, or absolute (section 7.5) |
+| `ADMIN_KEY` | empty (admin off) | The key the Tags screen asks for before the tag lists can be changed (header `X-Admin-Key`, section 7.7). On a server: a long random value kept outside the repository |
 
 > **Use `127.0.0.1`, not `localhost`,** in `DATABASE_URL` and `OLLAMA_BASE_URL`. On Windows, `localhost` tries IPv6 first: the database connection stalls and Ollama calls lose about 2 s each. (`API_CORS_ORIGINS` is the exception: it is the address the browser shows, not a connection the app opens.)
 
@@ -597,7 +615,8 @@ RAG/
 │   ├── service.py           # shared glue for scripts and API: build_services, run_ingest, ask
 │   ├── api/
 │   │   ├── app.py           # FastAPI app: /health, /chat, /documents/ingest, the job runner
-│   │   ├── documents.py     # /documents: upload, list, get, file, delete; upload size limit
+│   │   ├── documents.py     # /documents: upload, list, get, file, tags, delete; upload size limit
+│   │   ├── tags.py          # /tags: the tag lists; admin key check
 │   │   ├── errors.py        # backend failures → 503 / 502
 │   │   ├── schemas.py       # request/response models
 │   │   └── jobs.py          # in-memory ingestion job registry
@@ -606,6 +625,7 @@ RAG/
 │   │   ├── storage.py       # files in DOCUMENTS_DIR: names, checks, safe save and delete
 │   │   ├── library.py       # upload / list / open / delete; build_library()
 │   │   ├── tracking.py      # indexing status around each run; adopting existing files
+│   │   ├── tags.py          # tag categories, values and document tags (master data); seed
 │   │   └── index.py         # the library's access to the chunks table
 │   ├── ingestion/
 │   │   ├── loaders.py       # files → Documents + metadata
@@ -637,14 +657,14 @@ RAG/
 **Not built:**
 
 - **API features:** no authentication, no streaming `/chat` (the whole answer arrives at once), no way to cancel an ingestion job.
-- **Database migrations:** the `chunks` and `documents` tables are created by the app on first use; there is no schema file or migration tool.
+- **Database migrations:** the `chunks`, `documents` and tag tables are created by the app on first use; there is no schema file or migration tool.
 - **Document library features:** one file per upload, no upload progress, no replacing a document in place (delete it, then upload again), no editing of product, version or type, and no versions, approvals, check-in/check-out or permissions.
 - **Reranking:** retrieved chunks are used in the order retrieval returns them (distance, or fused vector + keyword rank); no cross-encoder reranker.
 - **Providers:** only Ollama (models) and pgvector (storage); no Azure or other providers.
 - **File types:** only PDF, Markdown and text. No Word, Excel, PowerPoint or HTML; no OCR for scanned PDFs.
 - **Search:** no relevance cut-off on distance, no vector index (every search compares against every chunk, which is fine at prototype size but will slow down with many documents). The keyword search has no synonyms: "PostgreSQL" in a question doesn't match "Postgres" in the documents (the vector search still may).
 - **Smarter chunking:** no splitting by Markdown headings; tables in PDFs come out as plain text in reading order.
-- **Product features:** no dedicated release-notes view, user accounts or permissions. The web app's Release notes screen places version-scoped questions in Chat instead.
+- **Product features:** no dedicated release-notes view, user accounts or permissions (the tag lists' admin key is the only protection), no automatic tagging, no version ranges in filters. The web app's Release notes screen places version-scoped questions in Chat instead.
 - **Deployment:** runs only on a developer machine; no server deployment, no production server settings for uvicorn.
 
 **Known limitations and inconsistencies:**

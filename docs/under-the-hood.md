@@ -162,11 +162,13 @@ uvicorn rag.api.app:app
 GET /health
  └─ check_services(need_chat_model=True)        health.py    → 200 ok / 503 with problems
 
-POST /chat  {"question", "product"?, "version"?, "k"?}
+POST /chat  {"question", "product"?, "version"?, "doc_type"?, "tags"?, "k"?}
  ├─ ChatRequest validation                      api/schemas.py   → 422 if invalid
  ├─ check_services(need_chat_model=True)        health.py        → 503 if a problem
+ ├─ tags chosen? tag_sources(get_tags(), tags)  service.py, dms/tags.py → the source files having them; 422 unknown category
  ├─ get_services()                              api/app.py   → build_services() on first use, then reused
- ├─ ask()                                       service.py   → find_passages() + answer() (with citations.py checks) + sources_to_show()
+ ├─ ask()                                       service.py   → no source file has the tags: "I don't know", no search, no model;
+ │                                                             otherwise find_passages() + answer() (with citations.py checks) + sources_to_show()
  └─ ChatResponse: answer, no_answer, numbered sources with excerpt
 
 POST /documents/ingest  (no body)
@@ -195,7 +197,7 @@ GET /documents/ingest/{job_id}
 
 ### `api/schemas.py`: the request and response bodies
 
-Pydantic models that validate input and describe output; FastAPI also publishes them at `/docs`. `ChatRequest` trims the question (1–2000 characters), caps filters at 100 characters, limits `k` to 1–20 and rejects unknown fields, so a misspelt `versoin` is an error instead of a silently ignored filter.
+Pydantic models that validate input and describe output; FastAPI also publishes them at `/docs`. `ChatRequest` trims the question (1–2000 characters), caps filters at 100 characters (`tags`: up to 20 categories of up to 100 codes), limits `k` to 1–20 and rejects unknown fields, so a misspelt `versoin` is an error instead of a silently ignored filter.
 
 ### `api/jobs.py`: the ingestion job registry
 
@@ -208,19 +210,22 @@ Pydantic models that validate input and describe output; FastAPI also publishes 
 Upload files into the documents folder, follow their indexing, serve and delete the originals. Only the API uses it (`src/rag/api/documents.py`); the scripts don't. It never runs the pipeline itself: it records what an upload changed, and the ingestion job runner (above) indexes it.
 
 ```
-POST /documents  (multipart: file, product, version, doc_type)
+POST /documents  (multipart: file, product, version, doc_type, tag*)
  ├─ UploadSizeLimit                              api/documents.py → 413 over MAX_UPLOAD_MB (from Content-Length, or counted as it arrives)
  ├─ library()                                    api/documents.py → 503 without DATABASE_URL, 500 without DOCUMENTS_DIR; build_library() on first use
  ├─ DocumentLibrary.upload()                     dms/library.py
  │   ├─ check_folder_name() ×3, clean_filename() dms/storage.py   → 422 if not acceptable
+ │   ├─ _check_master_data()                     dms/tags.py lists → 422 a value not in the list or retired; bad extra tags
  │   ├─ source_for()                             dms/storage.py   → <product>/<version>/<doc_type>/<name>, existing capitals reused
  │   ├─ mark the path as uploading; taken?       → 409
  │   ├─ DocumentStorage.save()                   dms/storage.py   → .uploads/ temp file, size + SHA-256, check_content(), link into place
- │   └─ DocumentRepository.add()                 dms/repository.py → status pending (the file is deleted again if this fails)
+ │   ├─ DocumentRepository.add()                 dms/repository.py → status pending (the file is deleted again if this fails)
+│   └─ set_document_tags()                      dms/tags.py      → its extra tags (record and file removed again if this fails)
  ├─ start_indexing_if_idle()                     api/app.py       → a job, or none (job running, or services down)
  └─ 201 with the document and ingest_job_id
 
-GET /documents, GET /documents/{id}             → DocumentRepository.list_all() / get()
+GET /documents[?tag=category:code], GET /documents/{id}  → list_all() / get(), with tags, unlisted values, tag filter
+PUT /documents/{id}/tags                        → set_document_tags() (no admin key)
 GET /documents/{id}/file[?download=true]        → readable_file() (no links, one hard link) → FileResponse
 DELETE /documents/{id}                          → 409 if a job runs; else file → delete_chunks() → record
 
@@ -261,6 +266,24 @@ An ingestion job (any trigger): IndexingTracker.run()   dms/tracking.py
 
 - `IndexAccess` bundles the three things the library needs from the `chunks` table (delete one file's chunks, count chunks per file, list indexed files) and the current `index_fingerprint()`. In the app they are `database.py` helpers; in tests, fakes.
 - `api/documents.py` holds the `/documents` endpoints and `UploadSizeLimit`, an ASGI middleware that caps the upload body: it refuses an oversized `Content-Length` before reading, and counts the bytes of every upload as they arrive, stopping with 413 once past the limit. This is needed because the form parser saves uploaded files to a temporary file, with no limit of its own, before the endpoint runs. Unsafe paths become a clear 500; a delete that stopped part-way returns what was done.
+
+## Workflow 4: Tags (`src/rag/dms/tags.py`)
+
+Every value a document is described with comes from a managed list, so nobody types a tag freely. Three built-in categories are the document's folders (`product`, `version`, `doc_type`): their values stay where they always were (the documents row and every chunk), and the lists only decide what an upload may use. Extra categories (e.g. Module), added on the Tags screen, live only in the tag tables.
+
+```
+GET /tags                                       → TagRepository.categories(): all values, retired ones flagged
+POST /tags/categories, POST /tags/categories/{key}/values, PATCH /tags/values/{id}, DELETE /tags/values/{id}
+ ├─ require_admin()                              api/tags.py  → 403 no ADMIN_KEY set, 401 missing/wrong X-Admin-Key
+ └─ add_category() / add_value() / update_value() / delete_value()   → 409 duplicate or in use, 422 invalid, 404 unknown
+```
+
+- **Tables** (created and seeded on first use, like `documents`): `tag_categories` (`key`, `label`, `builtin`, `multiple`, `sort_order`), `tag_values` (`code`, `label`, `active`, `sort_order`; unique per category on `lower(code)`, and on `lower(label)` among active values) and `document_tags` (document → value, deleted with the document). `seed()` runs only when there are no categories, so a restart never duplicates values or undoes an admin's changes. Existing documents' folder values are not imported.
+- **Codes and labels.** A code is a folder name (`check_folder_name()`), what documents store, and never changes; a label is what people see and can be renamed. Versions are kept in numeric order (`version_sort_key()`: 16.9 before 16.10, non-numbers last).
+- **Retire, don't delete.** `update_value(active=False)` hides a value from upload and tagging but documents keep it and filters still find it. `delete_value()` refuses a value a document row, a document's tags or a chunk (`database.column_has_value()`) still uses.
+- **A document's extra tags** are replaced as a whole by `set_document_tags()`: active values of extra categories, one per single-value category; a retired value the document already has may stay.
+- **Chat:** `service.tag_sources()` asks `sources_with_tags()` for the documents having, for every chosen category, one of its codes, and `retrieve()` limits both searches to those `source` paths (the vector store's `$in` filter, the keyword search's `= ANY`), next to the product / version / doc_type equality filters. An empty set answers "I don't know" without searching.
+- **The web app** loads the lists once (`TagsProvider`, `useTags()`), offers only their values in Upload, Documents, Chat and Release notes, and on the Tags screen asks for the admin key once per browser tab (kept in `sessionStorage`, sent only as the `X-Admin-Key` header).
 
 ## Things worth knowing
 

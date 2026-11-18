@@ -138,7 +138,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
         started = time.monotonic()  # elapsed_ms covers answering, as before, not the service checks
         try:
-            sources = tag_sources(get_tags(), request.tags) if any((request.tags or {}).values()) else None
+            chosen = any(code for codes in (request.tags or {}).values() for code in codes)
+            sources = tag_sources(get_tags(), request.tags) if chosen else None
             result = ask(get_services(), request.question, k=request.k, version=request.version,
                          product=request.product, doc_type=request.doc_type, sources=sources)
         except TagNotFound as error:

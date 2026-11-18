@@ -86,7 +86,7 @@ Put files in `documents\<product>\<version>\<doc_type>\`, for example:
 documents\documentum\16.2\release-notes\notes.pdf
 ```
 
-- The folder names become the product, version and document type, which you can filter by when asking.
+- The folder names become the product, version and document type, which you can filter by when asking. Folder names that are codes in the tag lists (for example `content-management.4elease-notes`) show with their labels; others still work and are marked "not in master list".
 - Supported files: PDF (with selectable text), `.md` and `.txt`. Scanned PDFs without a text layer are skipped.
 - `documents/` is git-ignored, so client files never get committed. Three fictional "Acme DMS" sample files (versions 1.0 and 2.0) may already be there for testing.
 
@@ -145,7 +145,8 @@ Invoke-RestMethod "http://127.0.0.1:8000/documents/ingest/$($job.job_id)"
 
 # The document library: list it, upload a file (curl.exe, which comes with Windows, sends the form), then delete it
 (Invoke-RestMethod http://127.0.0.1:8000/documents).documents | Format-Table filename, status, product, version
-curl.exe -F "file=@C:\path\to\notes.pdf" -F product=documentum -F version=16.2 -F doc_type=release-notes http://127.0.0.1:8000/documents
+curl.exe -F "file=@C:\path\to\notes.pdf" -F product=content-management -F version=24.4 -F doc_type=release-notes http://127.0.0.1:8000/documents
+Invoke-RestMethod http://127.0.0.1:8000/tags   # the tag lists the values must come from
 Invoke-RestMethod -Method Delete "http://127.0.0.1:8000/documents/<id from the list>"
 ```
 
@@ -153,7 +154,7 @@ Invoke-RestMethod -Method Delete "http://127.0.0.1:8000/documents/<id from the l
 - **`/chat`** takes `question` (required), `product`, `version` and `k` (1–20, default 5). It returns `answer`, `no_answer` (true for "I don't know"), and `sources`, each with a `number` matching the `[n]` in the answer and an `excerpt` (the whole passage the model was given). The whole answer arrives at once, after the same time as in step 7.
 - **`/documents/ingest`** always indexes `DOCUMENTS_DIR`; it doesn't take a folder from the request. It answers straight away with a `job_id`. Checking that job shows `running`, then `succeeded` with the same counts `ingest.py` prints, or `failed` with a reason. Only one job runs at a time: starting a second one returns an error naming the running job.
 - **Job history is kept in memory only.** After you stop or restart the server, old job ids are unknown (404), and a job that was running when you stopped it never finishes. Files it had already indexed stay indexed; run ingestion again to finish the rest. (Documents that job was indexing show as *pending* again once the server is back.)
-- **`/documents`** is the document library. An upload takes a `.pdf`, `.md` or `.txt` file of up to 50 MB (`MAX_UPLOAD_MB` in `.env`) with a product, version and document type, stores it at `documents\<product>\<version>\<doc_type>\` and starts indexing it when it can. `GET /documents/{id}/file` returns the original (`?download=true` to save it). Deleting removes the file, its passages and its record, and is refused while indexing runs. The full list of rules and errors is in the [architecture guide](langchain-ollama-rag-architecture.md#76-document-library).
+- **`/documents`** is the document library. An upload takes a `.pdf`, `.md` or `.txt` file of up to 50 MB (`MAX_UPLOAD_MB` in `.env`) with a product, version and document type from the tag lists (`/tags`), stores it at `documents\<product>\<version>\<doc_type>\` and starts indexing it when it can. `GET /documents/{id}/file` returns the original (`?download=true` to save it). Deleting removes the file, its passages and its record, and is refused while indexing runs. The full list of rules and errors is in the [architecture guide](langchain-ollama-rag-architecture.md#76-document-library).
 - **Errors** come back as `{"detail": "..."}` and PowerShell shows them in red: 422 for a bad request (for example `k` above 20), 503 when Ollama or the database is down (same messages as step 10 below), 502 when the model itself fails (for example not enough memory), 500 for anything unexpected.
 
 ## 9. Run the web app (optional)
@@ -168,15 +169,16 @@ npm run dev
 
 - `npm install` downloads the web app's libraries into `frontend\node_modules`. It is needed once, and again after the app's dependencies change.
 - `npm run dev` starts the development server. Open **http://localhost:5173** in a browser. It forwards the app's requests to the API at `127.0.0.1:8000`, so no extra setup is needed.
-- **Chat:** type a question, optionally with a product, version and number of passages, and press Enter. Click a `[n]` citation or a source card to read the full passage it came from.
+- **Chat:** type a question, optionally choose a product, version and number of passages (and, under **Tags**, a document type and extra tags), and press Enter. Click a `[n]` citation or a source card to read the full passage it came from.
 - **Sidebar:** New chat, this session's questions (click one to jump back to it), a service-status card with a re-check button, and a System / Light / Dark theme switch. When a service is down, Chat also shows a notice saying which one and why.
 - **Documents:** the document library.
-  - **Upload** a file with its product, version and document type (the boxes suggest values already in use). Mistakes are shown on the form before anything is sent.
+  - **Upload** a file with its product, version and document type, picked from the tag lists (nothing is typed), plus any extra tags. Mistakes are shown on the form before anything is sent.
   - The list shows every document, including files copied into the folder by hand, with its status: *Pending*, *Processing*, *Indexed* (with its number of passages) or *Failed* (with the reason). While a document is waiting, the list checks again every few seconds.
-  - **Search** by name, path, product, version or type, and **filter** by status.
+  - **Search** by name, path, product, version or type, and **filter** by status or by any tag. Each document shows its tags; a retired value or one not in the lists is marked. **Edit tags** changes a document's extra tags.
   - **Open** shows the original in a new tab; **Download** saves it.
   - **Delete** asks for confirmation, then removes the file, its passages and its record.
   - **Index pending documents** starts indexing by hand, for example after Ollama was down.
+- **Tags:** the tag lists. Anyone can read them; to add categories and values, rename, retire or delete them, enter the admin key (`ADMIN_KEY` in `.env`; empty by default, which turns this off). The key is kept only while the browser tab is open.
 - **Ingestion:** the same indexing as step 6, with progress and results. **Release notes:** pick a version and a topic to place a version-scoped question in Chat.
 - Press **Ctrl+C** in this window to stop the web app.
 
