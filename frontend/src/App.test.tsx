@@ -6,11 +6,16 @@ import { App, TABS } from "./App";
 
 const OK = { status: "ok", llm_model: "gemma3:4b", embedding_model: "nomic-embed-text", problems: [] };
 const ANSWER = { answer: "Kept answer [1].", no_answer: false, sources: [], model: "gemma3:4b", elapsed_ms: 1000 };
+const TAGS = { categories: [
+  { key: "version", label: "Version", builtin: true, multiple: false, values: [
+    { id: 1, code: "16.2", label: "16.2", active: true }, { id: 2, code: "24.4", label: "24.4", active: true },
+  ] },
+] };
 
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string) => Response.json(url === "/health" ? OK : ANSWER)),
+    vi.fn(async (url: string) => Response.json(url === "/health" ? OK : url === "/tags" ? TAGS : ANSWER)),
   );
 });
 
@@ -96,16 +101,18 @@ describe("App: chat across the shell", () => {
     render(<App />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: "Release notes" }));
-    const version = screen.getByRole("textbox", { name: "Version" });
-    await user.clear(version);
-    await user.type(version, "16.2");
+    const version = screen.getByRole("combobox", { name: "Version" });
+    await screen.findByRole("option", { name: "24.4" }); // the versions come from the master list
+    await user.selectOptions(version, "24.4");
+    await user.selectOptions(version, "16.2");
     await user.click(screen.getByRole("button", { name: /Which features are deprecated in version 16\.2\?/ }));
     expect(window.location.hash).toBe("#chat");
     expect(await screen.findByRole("heading", { level: 1, name: "Chat" })).toBeTruthy();
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe(
       "Which features are deprecated in version 16.2?",
     );
-    expect((screen.getByLabelText("Version (optional)") as HTMLInputElement).value).toBe("16.2");
+    expect((screen.getByLabelText("Version (optional)") as HTMLSelectElement).value).toBe("16.2");
+    expect(fetch.mock.calls.filter(([url]) => url === "/tags")).toHaveLength(1); // one shared copy for all screens
     expect(fetch.mock.calls.filter(([url]) => url === "/chat")).toHaveLength(0);
   });
 

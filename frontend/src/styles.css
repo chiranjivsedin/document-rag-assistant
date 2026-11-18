@@ -653,6 +653,21 @@ textarea {
   white-space: nowrap;
 }
 
+.tag-retired,
+.tag-unlisted {
+  border-style: dashed;
+}
+
+.tag-unlisted {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.tag-mark {
+  font-style: italic;
+  white-space: pre;
+}
+
 .tag-ok {
   background: var(--ok-soft);
   border-color: transparent;
@@ -861,6 +876,45 @@ textarea {
 
 .pill-field input[type="number"] {
   width: 3.4em;
+}
+
+.pill-field select {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 4px 4px 6px;
+  max-width: 14em;
+}
+
+.pill-field select:focus {
+  outline: none;
+}
+
+/* The Tags pill opens the extra filters (document type and extra categories) under the composer row. */
+.pill-button {
+  gap: 6px;
+  padding: 0 12px 0 10px;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.pill-button .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.pill-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chat-tags {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
 }
 
 .send {
@@ -1481,7 +1535,7 @@ textarea {
   color: var(--text-3);
 }
 
-.version-field input {
+.version-field select {
   width: 150px;
   height: 42px;
   padding: 0 14px;
@@ -1493,7 +1547,7 @@ textarea {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.version-field input:focus {
+.version-field select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 4px var(--accent-soft);
@@ -1835,6 +1889,16 @@ textarea {
   padding: 0;
   margin-bottom: 5px;
 }
+.edit-tags {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
 .tag-choice {
   display: inline-flex;
   align-items: center;

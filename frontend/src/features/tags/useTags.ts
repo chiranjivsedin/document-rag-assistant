@@ -11,7 +11,8 @@ export interface TagsState {
   refresh: () => void;
 }
 
-const TagsContext = createContext<TagsState | null>(null);
+/** The shared lists. Exported so tests can provide fixed lists without fetching them. */
+export const TagsContext = createContext<TagsState | null>(null);
 
 /** Load the master lists (GET /tags) when `enabled`, and again on refresh(). */
 function useTagLoader(enabled: boolean): TagsState {
@@ -63,6 +64,11 @@ export function useTags(): TagsState {
 /** A category's values that may be newly used (retired ones are hidden from pickers). */
 export function activeValues(category: TagCategory): TagValue[] {
   return category.values.filter((value) => value.active);
+}
+
+/** A filter's choices: every value, retired ones marked (documents keep them, and they still filter). */
+export function filterLabel(value: TagValue): string {
+  return value.active ? value.label : `${value.label} (retired)`;
 }
 
 /** The category with this key, if the lists have it. */

@@ -20,6 +20,7 @@ import { turnElementId } from "./features/chat/ChatTurn";
 import { IngestPage } from "./features/ingest/IngestPage";
 import { DocumentsPage } from "./features/library/DocumentsPage";
 import { ReleaseNotesPage } from "./features/releases/ReleaseNotesPage";
+import { TagsProvider } from "./features/tags/useTags";
 
 // One tab per area of the app. The current tab lives in the URL hash (#chat, #documents, ...), so it survives a
 // reload and the built app is just index.html: no client-side routes can collide with API paths like /chat.
@@ -107,6 +108,7 @@ export function App() {
   };
 
   return (
+    <TagsProvider>
     <div className={menuOpen ? "app menu-open" : "app"}>
       <aside className="sidebar" id="sidebar" aria-label="Main menu">
         <div className="sidebar-top">
@@ -223,5 +225,6 @@ export function App() {
         </div>
       </div>
     </div>
+    </TagsProvider>
   );
 }

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { DEFAULT_TOP_K, type ChatRequest, type ChatResponse } from "../../api/types";
+import { DEFAULT_TOP_K, type ChatRequest, type ChatResponse, type TagCategory } from "../../api/types";
 import { ElapsedTimer } from "../../components/ElapsedTimer";
 import { ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
 import { CheckIcon, CopyIcon, InfoIcon, RetryIcon, SparkIcon } from "../../components/Icons";
+import { findCategory, labelFor } from "../tags/useTags";
 import { citedNumbers, splitCitations } from "./citations";
 import { previewElementId, revealSource, SourceList } from "./SourceList";
 
@@ -16,14 +17,24 @@ export type Turn = { id: number; request: ChatRequest; startedAt: number } & (
 
 interface Props {
   turn: Turn;
+  categories?: TagCategory[]; // the master lists, to show filters by their labels
   onCancel: () => void;
   onRetry: (request: ChatRequest) => void;
   canRetry: boolean;
 }
 
-/** The search scope a question was asked with, as chips. */
-function scopeChips(request: ChatRequest): string[] {
-  const chips = [request.product && `product ${request.product}`, request.version && `version ${request.version}`];
+/** The search scope a question was asked with, as chips, with the master lists' labels. */
+function scopeChips(request: ChatRequest, categories: TagCategory[]): string[] {
+  const label = (key: string, code: string) => labelFor(categories, key, code);
+  const chips = [
+    request.product && `product ${label("product", request.product)}`,
+    request.version && `version ${label("version", request.version)}`,
+    request.doc_type && `type ${label("doc_type", request.doc_type)}`,
+    ...Object.entries(request.tags ?? {}).map(
+      ([key, codes]) =>
+        `${(findCategory(categories, key)?.label ?? key).toLowerCase()} ${codes.map((code) => label(key, code)).join(" or ")}`,
+    ),
+  ];
   const filters = chips.filter((chip): chip is string => Boolean(chip));
   return [...(filters.length ? filters : ["all documents"]), `top ${request.k ?? DEFAULT_TOP_K}`];
 }
@@ -33,7 +44,7 @@ export function turnElementId(id: number): string {
 }
 
 /** One question and what came back for it: waiting, an answer with sources, an error, or cancelled. */
-export function ChatTurn({ turn, onCancel, onRetry, canRetry }: Props) {
+export function ChatTurn({ turn, categories = [], onCancel, onRetry, canRetry }: Props) {
   const retry = (
     <button type="button" className="button button-ghost" onClick={() => onRetry(turn.request)} disabled={!canRetry}>
       <RetryIcon />
@@ -46,7 +57,7 @@ export function ChatTurn({ turn, onCancel, onRetry, canRetry }: Props) {
       <header className="turn-head">
         <h2 className="turn-question">{turn.request.question}</h2>
         <ul className="scope" aria-label="Search scope">
-          {scopeChips(turn.request).map((chip) => (
+          {scopeChips(turn.request, categories).map((chip) => (
             <li key={chip} className="tag">
               {chip}
             </li>

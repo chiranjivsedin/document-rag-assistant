@@ -61,6 +61,15 @@ export function useDocuments(active: boolean, pollIntervalMs: number) {
     );
   }, []);
 
+  /** Show a changed document (e.g. its tags) in its place. */
+  const replace = useCallback((document: DocumentRecord) => {
+    setState((current) =>
+      current.kind === "loaded"
+        ? { ...current, documents: current.documents.map((d) => (d.id === document.id ? document : d)) }
+        : current,
+    );
+  }, []);
+
   /** Stop showing a deleted document straight away. */
   const remove = useCallback((id: string) => {
     setState((current) =>
@@ -68,5 +77,5 @@ export function useDocuments(active: boolean, pollIntervalMs: number) {
     );
   }, []);
 
-  return { state, reload, add, remove };
+  return { state, reload, add, remove, replace };
 }

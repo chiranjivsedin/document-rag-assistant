@@ -1,13 +1,43 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { postChat } from "../../api/client";
-import { DEFAULT_TOP_K, type ChatRequest } from "../../api/types";
+import { DEFAULT_TOP_K, type ChatRequest, type TagCategory } from "../../api/types";
 import { describeError } from "../../components/ErrorMessage";
 import { AlertIcon, ArrowUpIcon, IndexIcon, SparkIcon, TagIcon } from "../../components/Icons";
+import { filterLabel, findCategory, useTags } from "../tags/useTags";
 import { ChatTurn, turnElementId, type Turn } from "./ChatTurn";
 
-const MAX_QUESTION = 2000; // same limits as ChatRequest in src/rag/api/schemas.py
-const MAX_FILTER = 100;
+const MAX_QUESTION = 2000; // same limit as ChatRequest in src/rag/api/schemas.py
+
+/** A filter picked from a master list: "Any" (no filter) or one of its values, retired ones marked. */
+function TagSelect({
+  category,
+  value,
+  onChange,
+  label,
+}: {
+  category: TagCategory | undefined;
+  value: string;
+  onChange: (code: string) => void;
+  label: string;
+}) {
+  const values = category?.values ?? [];
+  const known = values.some((v) => v.code === value);
+  return (
+    <label className="pill-field">
+      <span>{category?.label ?? label}</span>
+      <select aria-label={`${category?.label ?? label} (optional)`} value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Any</option>
+        {values.map((v) => (
+          <option key={v.id} value={v.code}>
+            {filterLabel(v)}
+          </option>
+        ))}
+        {value && !known && <option value={value}>{value}</option>}
+      </select>
+    </label>
+  );
+}
 
 const SUGGESTIONS = [
   { icon: TagIcon, title: "Deprecated features", question: "Which features are deprecated?" },
@@ -37,6 +67,11 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
   const [question, setQuestion] = useState("");
   const [product, setProduct] = useState("");
   const [version, setVersion] = useState("");
+  const [docType, setDocType] = useState("");
+  const [extra, setExtra] = useState<Record<string, string>>({}); // extra category key -> code ("" = any)
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const tags = useTags();
+  const extraCategories = tags.categories.filter((category) => !category.builtin);
   const [k, setK] = useState(String(DEFAULT_TOP_K));
   const [formError, setFormError] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]); // oldest first, like a conversation
@@ -74,6 +109,7 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
   }, [question]);
 
   const waiting = turns.some((turn) => turn.status === "waiting");
+  const tagCount = (docType ? 1 : 0) + extraCategories.filter((category) => extra[category.key]).length;
 
   const update = (id: number, change: Partial<Turn>) =>
     setTurns((all) => all.map((turn) => (turn.id === id ? ({ ...turn, ...change } as Turn) : turn)));
@@ -109,8 +145,13 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
     }
     setFormError(null);
     const request: ChatRequest = { question: text, k: topK };
-    if (product.trim()) request.product = product.trim();
-    if (version.trim()) request.version = version.trim();
+    if (product) request.product = product;
+    if (version) request.version = version;
+    if (docType) request.doc_type = docType;
+    const chosen = Object.fromEntries(
+      extraCategories.filter((category) => extra[category.key]).map((category) => [category.key, [extra[category.key]]]),
+    );
+    if (Object.keys(chosen).length > 0) request.tags = chosen;
     setQuestion("");
     void send(request);
     setTimeout(() => questionBox.current?.focus(), 0); // the composer moves when the first question is sent
@@ -148,28 +189,18 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
         />
         <div className="composer-row">
           <div className="filters">
-            <label className="pill-field">
-              <span>Product</span>
-              <input
-                aria-label="Product (optional)"
-                value={product}
-                onChange={(e) => setProduct(e.target.value)}
-                maxLength={MAX_FILTER}
-                placeholder="Any"
-                size={8}
-              />
-            </label>
-            <label className="pill-field">
-              <span>Version</span>
-              <input
-                aria-label="Version (optional)"
-                value={version}
-                onChange={(e) => setVersion(e.target.value)}
-                maxLength={MAX_FILTER}
-                placeholder="Any"
-                size={6}
-              />
-            </label>
+            <TagSelect category={findCategory(tags.categories, "product")} label="Product" value={product} onChange={setProduct} />
+            <TagSelect category={findCategory(tags.categories, "version")} label="Version" value={version} onChange={setVersion} />
+            <button
+              type="button"
+              className={tagsOpen || tagCount > 0 ? "pill-field pill-button pill-on" : "pill-field pill-button"}
+              aria-expanded={tagsOpen}
+              aria-controls="chat-tags"
+              onClick={() => setTagsOpen((open) => !open)}
+            >
+              <TagIcon />
+              <span>{tagCount > 0 ? `Tags · ${tagCount}` : "Tags"}</span>
+            </button>
             <label className="pill-field">
               <span>Passages</span>
               <input
@@ -187,6 +218,21 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
             <ArrowUpIcon />
           </button>
         </div>
+        {tagsOpen && (
+          <div className="filters chat-tags" id="chat-tags" role="group" aria-label="Tags">
+            <TagSelect category={findCategory(tags.categories, "doc_type")} label="Document type" value={docType} onChange={setDocType} />
+            {extraCategories.map((category) => (
+              <TagSelect
+                key={category.key}
+                category={category}
+                label={category.label}
+                value={extra[category.key] ?? ""}
+                onChange={(code) => setExtra((current) => ({ ...current, [category.key]: code }))}
+              />
+            ))}
+            {tags.error && <span className="hint">Couldn't load the tag lists ({tags.error}).</span>}
+          </div>
+        )}
       </form>
       {formError && (
         <p className="banner banner-error" role="alert">
@@ -235,6 +281,7 @@ export function ChatPage({ prefill = null, onHistoryChange }: Props) {
           <ChatTurn
             key={turn.id}
             turn={turn}
+            categories={tags.categories}
             onCancel={() => controller.current?.abort()}
             onRetry={(request) => void send(request)}
             canRetry={!waiting}

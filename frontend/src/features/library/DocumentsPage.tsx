@@ -1,16 +1,22 @@
 import { useMemo, useState } from "react";
 
 import { startIngest } from "../../api/client";
-import type { DocumentStatus } from "../../api/types";
+import type { DocumentRecord, DocumentStatus, TagCategory } from "../../api/types";
 import { describeError, ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
 import { AlertIcon, CheckIcon, IndexIcon, RetryIcon } from "../../components/Icons";
 import { type DeleteOutcome, DocumentTable } from "./DocumentTable";
-import { useTags } from "../tags/useTags";
+import { filterLabel, useTags } from "../tags/useTags";
 import { isWaiting, matchesSearch, STATUS_LABELS } from "./format";
 import { UploadCard } from "./UploadCard";
 import { useDocuments } from "./useDocuments";
 
 type Notice = { kind: "ok"; text: string } | { kind: "error"; error: ErrorText } | null;
+
+/** Whether a document has this tag: its folder value for a built-in category, one of its tags for an extra one. */
+function hasTag(document: DocumentRecord, category: TagCategory, code: string): boolean {
+  if (category.builtin) return document[category.key as "product" | "version" | "doc_type"] === code;
+  return (document.tags ?? []).some((tag) => tag.category === category.key && tag.code === code);
+}
 
 /**
  * The document library: upload files, see whether each one is indexed, open or download the original, and delete
@@ -18,15 +24,21 @@ type Notice = { kind: "ok"; text: string } | { kind: "error"; error: ErrorText }
  * only while it is shown and a document is still waiting to be indexed.
  */
 export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boolean; pollIntervalMs?: number }) {
-  const { state, reload, add, remove } = useDocuments(active, pollIntervalMs);
+  const { state, reload, add, remove, replace } = useDocuments(active, pollIntervalMs);
   const tags = useTags();
+  const [tagFilter, setTagFilter] = useState<Record<string, string>>({}); // category key -> code ("" = all)
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | "all">("all");
   const [notice, setNotice] = useState<Notice>(null);
   const [starting, setStarting] = useState(false);
 
   const documents = useMemo(() => (state.kind === "loaded" ? state.documents : []), [state]);
-  const shown = documents.filter((d) => (statusFilter === "all" || d.status === statusFilter) && matchesSearch(d, search));
+  const shown = documents.filter(
+    (d) =>
+      (statusFilter === "all" || d.status === statusFilter) &&
+      matchesSearch(d, search) &&
+      tags.categories.every((category) => !tagFilter[category.key] || hasTag(d, category, tagFilter[category.key])),
+  );
   const counts = {
     total: documents.length,
     indexed: documents.filter((d) => d.status === "indexed").length,
@@ -128,6 +140,22 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
                 </option>
               ))}
             </select>
+            {tags.categories.map((category) => (
+              <select
+                key={category.key}
+                className="select-field"
+                aria-label={`Filter by ${category.label}`}
+                value={tagFilter[category.key] ?? ""}
+                onChange={(event) => setTagFilter((current) => ({ ...current, [category.key]: event.target.value }))}
+              >
+                <option value="">{`All: ${category.label}`}</option>
+                {category.values.map((value) => (
+                  <option key={value.id} value={value.code}>
+                    {filterLabel(value)}
+                  </option>
+                ))}
+              </select>
+            ))}
             <button
               type="button"
               className="button button-ghost button-small"
@@ -184,7 +212,15 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
               Showing {shown.length} of {documents.length} {documents.length === 1 ? "document" : "documents"}
               {counts.waiting > 0 && active ? " · checking indexing progress every few seconds" : ""}
             </p>
-            <DocumentTable documents={shown} onDeleted={deleted} />
+            <DocumentTable
+              documents={shown}
+              categories={tags.categories}
+              onDeleted={deleted}
+              onTagsSaved={(document) => {
+                replace(document);
+                setNotice({ kind: "ok", text: `Saved the tags of ${document.filename}.` });
+              }}
+            />
           </>
         )}
       </section>

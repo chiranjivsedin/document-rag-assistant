@@ -2,8 +2,37 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ChatResponse } from "../../api/types";
+import type { ReactNode } from "react";
+
+import type { ChatResponse, TagCategory } from "../../api/types";
+import { TagsContext, type TagsState } from "../tags/useTags";
 import { ChatPage } from "./ChatPage";
+
+// Fixed master lists, provided as the app's TagsProvider would (no GET /tags in these tests).
+const TAGS: TagCategory[] = [
+  { key: "product", label: "Product", builtin: true, multiple: false, values: [
+    { id: 1, code: "acme-dms", label: "Acme DMS", active: true },
+    { id: 2, code: "content-management", label: "Content Management", active: true },
+  ] },
+  { key: "version", label: "Version", builtin: true, multiple: false, values: [
+    { id: 10, code: "1.0", label: "1.0", active: true },
+    { id: 11, code: "9.9", label: "9.9", active: true },
+    { id: 12, code: "16.2", label: "16.2", active: true },
+    { id: 13, code: "0.9", label: "0.9", active: false },
+  ] },
+  { key: "doc_type", label: "Document type", builtin: true, multiple: false, values: [
+    { id: 20, code: "release-notes", label: "Release notes", active: true },
+  ] },
+  { key: "module", label: "Module", builtin: false, multiple: false, values: [
+    { id: 30, code: "workflow", label: "Workflow", active: true },
+    { id: 31, code: "search", label: "Search", active: false },
+  ] },
+];
+const LISTS: TagsState = { categories: TAGS, loading: false, error: null, refresh: () => {} };
+
+function wrapper({ children }: { children: ReactNode }) {
+  return <TagsContext.Provider value={LISTS}>{children}</TagsContext.Provider>;
+}
 
 const NO_ANSWER = "I don't know based on the available documents.";
 
@@ -73,8 +102,8 @@ function neverAnswer() {
 
 async function ask(question: string, options: { product?: string; version?: string; k?: string } = {}) {
   const user = userEvent.setup();
-  if (options.product) await user.type(screen.getByLabelText("Product (optional)"), options.product);
-  if (options.version) await user.type(screen.getByLabelText("Version (optional)"), options.version);
+  if (options.product) await user.selectOptions(screen.getByLabelText("Product (optional)"), options.product);
+  if (options.version) await user.selectOptions(screen.getByLabelText("Version (optional)"), options.version);
   if (options.k !== undefined) {
     await user.clear(screen.getByLabelText("Top-k"));
     await user.type(screen.getByLabelText("Top-k"), options.k);
@@ -106,23 +135,23 @@ function previewTags() {
 }
 
 describe("ChatPage: asking", () => {
-  it("sends the question with trimmed filters and k, and shows the answer with model and time", async () => {
+  it("sends the question with the chosen filters and k, and shows the answer with model and time", async () => {
     const { fetch, requests } = answer(ANSWERED);
-    render(<ChatPage />);
-    await ask("  What is deprecated?  ", { product: " acme-dms ", version: "1.0", k: "3" });
+    render(<ChatPage />, { wrapper });
+    await ask("  What is deprecated?  ", { product: "Acme DMS", version: "1.0", k: "3" });
 
     expect(await screen.findByText(/See also/)).toBeTruthy();
     expect(fetch).toHaveBeenCalledWith("/chat", expect.objectContaining({ method: "POST" }));
     expect(requests).toEqual([{ question: "What is deprecated?", k: 3, product: "acme-dms", version: "1.0" }]);
     expect(screen.getByText("Answered by gemma3:4b in 18.4 s")).toBeTruthy();
-    expect(scopeChips()).toEqual(["product acme-dms", "version 1.0", "top 3"]);
+    expect(scopeChips()).toEqual(["product Acme DMS", "version 1.0", "top 3"]); // labels from the lists
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe(""); // ready for the next question
   });
 
-  it("leaves out empty filters (they would mean 'no filter' anyway)", async () => {
+  it("leaves out filters left at Any", async () => {
     const { requests } = answer(ANSWERED);
-    render(<ChatPage />);
-    await ask("Q?", { product: "   " });
+    render(<ChatPage />, { wrapper });
+    await ask("Q?", { product: "Any" });
     await screen.findByText(/See also/);
     expect(requests).toEqual([{ question: "Q?", k: 3 }]);
     expect(scopeChips()).toEqual(["all documents", "top 3"]);
@@ -130,7 +159,7 @@ describe("ChatPage: asking", () => {
 
   it("offers example questions that fill the composer without sending", async () => {
     const { fetch } = answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await userEvent.click(screen.getByRole("button", { name: /Which features are deprecated\?/ }));
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("Which features are deprecated?");
     expect(document.activeElement).toBe(screen.getByLabelText("Question"));
@@ -139,22 +168,22 @@ describe("ChatPage: asking", () => {
 
   it("places a question and version handed over from another screen", async () => {
     answer(ANSWERED);
-    const { rerender } = render(<ChatPage />);
+    const { rerender } = render(<ChatPage />, { wrapper });
     rerender(<ChatPage prefill={{ id: 1, question: "What is new in version 16.2?", version: "16.2" }} />);
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("What is new in version 16.2?");
-    expect((screen.getByLabelText("Version (optional)") as HTMLInputElement).value).toBe("16.2");
+    expect((screen.getByLabelText("Version (optional)") as HTMLSelectElement).value).toBe("16.2");
   });
 
   it("keeps the Ask button disabled for a blank question", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await userEvent.type(screen.getByLabelText("Question"), "   ");
     expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("rejects a top-k outside 1–20 without calling the API", async () => {
     const { fetch } = answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await ask("Q?", { k: "25" });
     expect((await screen.findByRole("alert")).textContent).toBe("Top-k must be a whole number from 1 to 20.");
     expect(fetch).not.toHaveBeenCalled();
@@ -162,7 +191,7 @@ describe("ChatPage: asking", () => {
 
   it("sends with Enter, and with Ctrl+Enter", async () => {
     const { requests } = answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Question"), "First?{Enter}");
     await screen.findByText(/See also/);
@@ -174,7 +203,7 @@ describe("ChatPage: asking", () => {
 
   it("starts a new line with Shift+Enter instead of sending", async () => {
     const { fetch } = answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await userEvent.type(screen.getByLabelText("Question"), "Line one{Shift>}{Enter}{/Shift}line two");
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("Line one\nline two");
     expect(fetch).not.toHaveBeenCalled();
@@ -183,7 +212,7 @@ describe("ChatPage: asking", () => {
   it("reports each asked question for the sidebar's history", async () => {
     answer(ANSWERED);
     const onHistoryChange = vi.fn();
-    render(<ChatPage onHistoryChange={onHistoryChange} />);
+    render(<ChatPage onHistoryChange={onHistoryChange} />, { wrapper });
     await ask("Q?");
     await screen.findByText(/See also/);
     expect(onHistoryChange).toHaveBeenLastCalledWith([{ id: 1, question: "Q?" }]);
@@ -193,7 +222,7 @@ describe("ChatPage: asking", () => {
 describe("ChatPage: citations and sources", () => {
   it("turns valid [n] into buttons and leaves unknown numbers as text", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await ask("Q?");
     await screen.findByText(/See also/);
     const buttons = screen.getAllByRole("button", { name: /Show source/ });
@@ -203,7 +232,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("a citation selects its source and opens and focuses the passage preview", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await screen.findByText(/See also/);
     expect(screen.getByText("Select a source or a citation to read the passage.")).toBeTruthy();
@@ -218,7 +247,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("shows each source in the strip and its full details in the preview", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await screen.findByText(/See also/);
     const [first, second, third] = sourceCards();
@@ -248,7 +277,7 @@ describe("ChatPage: citations and sources", () => {
       "- Basic authentication for the REST API is deprecated in 1.0. Use token authentication instead.";
     const sources = [{ ...ANSWERED.sources[0], excerpt: passage }];
     answer({ ...ANSWERED, answer: "Basic authentication is deprecated in 1.0 [1].", sources });
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await user.click(await screen.findByRole("button", { name: "Show source 1" }));
     const excerpt = screen.getByLabelText("Source 1").querySelector("blockquote")!;
@@ -258,7 +287,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("every citation selects exactly its own source (regression)", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await screen.findByText(/See also/);
     for (const citation of screen.getAllByRole("button", { name: /^Show source \d+$/ })) {
@@ -273,7 +302,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("makes grouped citations like [1, 2] and [1-3] clickable and maps each to its source (regression)", async () => {
     answer({ ...ANSWERED, answer: "Deprecated [1, 2]. Removed [1-3]. Unknown [2, 7]." });
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await screen.findByText(/Unknown/);
     const citations = screen.getAllByRole("button", { name: /^Show source \d+$/ });
@@ -290,7 +319,7 @@ describe("ChatPage: citations and sources", () => {
     ["Space", " "],
   ])("opens the source from the keyboard with %s and moves focus to the passage (regression)", async (_name, keys) => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await screen.findByText(/See also/);
     screen.getAllByRole("button", { name: "Show source 2" })[0].focus();
@@ -307,7 +336,7 @@ describe("ChatPage: citations and sources", () => {
       scrolled.push(this);
     };
     try {
-      render(<ChatPage />);
+      render(<ChatPage />, { wrapper });
       const user = await ask("Q?");
       await screen.findByText(/See also/);
       const sources = screen.getByRole("region", { name: "Sources" });
@@ -325,7 +354,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("points each citation at the passage it opens and names the file on hover", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     await screen.findByText(/See also/);
     const citation = screen.getAllByRole("button", { name: "Show source 2" })[0];
@@ -338,7 +367,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("copies the answer text", async () => {
     answer(ANSWERED);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?"); // userEvent.setup() provides a stand-in clipboard
     await screen.findByText(/See also/);
     await user.click(screen.getByRole("button", { name: "Copy" }));
@@ -348,7 +377,7 @@ describe("ChatPage: citations and sources", () => {
 
   it("shows 'I don't know' answers without sources", async () => {
     answer({ answer: NO_ANSWER, no_answer: true, sources: [], model: "gemma3:4b", elapsed_ms: 900 });
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await ask("Unrelated?", { version: "9.9" });
     expect(await screen.findByText("No answer found in the documents.")).toBeTruthy();
     expect(screen.getByText(/remove the product or version filter/)).toBeTruthy();
@@ -359,7 +388,7 @@ describe("ChatPage: citations and sources", () => {
 describe("ChatPage: waiting and cancelling", () => {
   it("shows the elapsed time and a Cancel button while waiting, and blocks a second question", async () => {
     neverAnswer();
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await ask("Slow question?");
     const status = screen.getByRole("status");
     expect(status.textContent).toContain("Searching your documents and writing the answer");
@@ -370,7 +399,7 @@ describe("ChatPage: waiting and cancelling", () => {
 
   it("cancel stops waiting, aborts the request and allows asking again", async () => {
     const { signals, fetch } = neverAnswer();
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Slow question?");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(await screen.findByText(/Stopped waiting/)).toBeTruthy();
@@ -395,7 +424,7 @@ describe("ChatPage: errors", () => {
     ],
   ])("shows a readable message for HTTP %i", async (status, body, message) => {
     answer(body, status);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     await ask("Q?");
     expect((await screen.findByRole("alert")).textContent).toBe(message);
   });
@@ -405,11 +434,54 @@ describe("ChatPage: errors", () => {
       Promise.reject(new TypeError("Failed to fetch")),
     );
     vi.stubGlobal("fetch", fetch);
-    render(<ChatPage />);
+    render(<ChatPage />, { wrapper });
     const user = await ask("Q?");
     expect((await screen.findByRole("alert")).textContent).toContain("Can't reach the API");
     fetch.mockImplementationOnce(async () => Response.json(ANSWERED));
     await user.click(screen.getByRole("button", { name: "Ask again" }));
     expect(await screen.findByText(/See also/)).toBeTruthy();
+  });
+});
+
+describe("ChatPage: filters from the master lists", () => {
+  function optionsOf(label: string) {
+    return within(screen.getByLabelText(label)).getAllByRole("option").map((o) => o.textContent);
+  }
+
+  it("offers Product and Version as dropdowns with Any; retired values are marked, still usable as filters", () => {
+    answer(ANSWERED);
+    render(<ChatPage />, { wrapper });
+    expect(optionsOf("Product (optional)")).toEqual(["Any", "Acme DMS", "Content Management"]);
+    expect(optionsOf("Version (optional)")).toEqual(["Any", "1.0", "9.9", "16.2", "0.9 (retired)"]);
+    expect(screen.queryAllByRole("textbox").map((box) => box.getAttribute("id"))).toEqual(["chat-question"]);
+  });
+
+  it("sends document type and extra tags from the Tags area, and shows them by label", async () => {
+    const { requests } = answer(ANSWERED);
+    render(<ChatPage />, { wrapper });
+    const user = userEvent.setup();
+    expect(screen.queryByLabelText("Document type (optional)")).toBeNull(); // folded away until asked for
+    await user.click(screen.getByRole("button", { name: "Tags" }));
+    await user.selectOptions(screen.getByLabelText("Document type (optional)"), "Release notes");
+    expect(optionsOf("Module (optional)")).toEqual(["Any", "Workflow", "Search (retired)"]);
+    await user.selectOptions(screen.getByLabelText("Module (optional)"), "Workflow");
+    expect(screen.getByRole("button", { name: "Tags · 2" }).getAttribute("aria-expanded")).toBe("true");
+    await ask("Q?", { version: "1.0" });
+
+    await screen.findByText(/See also/);
+    expect(requests).toEqual([{ question: "Q?", k: 3, version: "1.0", doc_type: "release-notes", tags: { module: ["workflow"] } }]);
+    expect(scopeChips()).toEqual(["version 1.0", "type Release notes", "module Workflow", "top 3"]);
+  });
+
+  it("leaves out tags set back to Any", async () => {
+    const { requests } = answer(ANSWERED);
+    render(<ChatPage />, { wrapper });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Tags" }));
+    await user.selectOptions(screen.getByLabelText("Module (optional)"), "Workflow");
+    await user.selectOptions(screen.getByLabelText("Module (optional)"), "Any");
+    await ask("Q?");
+    await screen.findByText(/See also/);
+    expect(requests).toEqual([{ question: "Q?", k: 3 }]);
   });
 });

@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { AlertIcon, ArrowRightIcon, InfoIcon, SparkIcon, TagIcon } from "../../components/Icons";
+import { filterLabel, findCategory, useTags } from "../tags/useTags";
 
 export const DEFAULT_VERSION = "16.2";
 
@@ -17,6 +18,7 @@ const TOPICS = [
 export function ReleaseNotesPage({ onAsk }: { onAsk: (question: string, version: string) => void }) {
   const [version, setVersion] = useState(DEFAULT_VERSION);
   const chosen = version.trim();
+  const versions = findCategory(useTags().categories, "version")?.values ?? []; // picked from the master list
 
   return (
     <div className="page">
@@ -30,7 +32,14 @@ export function ReleaseNotesPage({ onAsk }: { onAsk: (question: string, version:
         </div>
         <label className="version-field">
           <span>Version</span>
-          <input value={version} onChange={(event) => setVersion(event.target.value)} maxLength={100} />
+          <select value={version} onChange={(event) => setVersion(event.target.value)}>
+            {versions.map((value) => (
+              <option key={value.id} value={value.code}>
+                {filterLabel(value)}
+              </option>
+            ))}
+            {!versions.some((value) => value.code === version) && <option value={version}>{version}</option>}
+          </select>
         </label>
       </section>
 

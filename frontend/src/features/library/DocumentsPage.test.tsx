@@ -134,7 +134,7 @@ describe("listing", () => {
     const folder = rowFor("readme.txt");
     expect(within(folder).getByText(/found in the documents folder/)).toBeTruthy();
     expect(within(rowFor("Release Notes.pdf")).queryByText(/found in the documents folder/)).toBeNull(); // uploaded
-    expect(within(folder).getByTitle("Product").textContent).toBe("acme"); // no version or type: only its product shows
+    expect(within(folder).getByTitle("Product").textContent).toBe("Acme"); // no version or type: only its product shows
     expect(within(folder).queryByTitle("Version")).toBeNull();
 
     const summary = screen.getByLabelText("Library summary");
@@ -204,7 +204,7 @@ describe("upload", () => {
   const user = () => userEvent.setup({ applyAccept: false });
 
   async function fill(u: ReturnType<typeof user>, values: { product?: string; version?: string; type?: string }) {
-    await screen.findByRole("option", { name: "Content Management" }); // the master lists have loaded
+    await screen.findAllByRole("option", { name: "Content Management" }); // the master lists have loaded
     if (values.product !== undefined) await u.selectOptions(screen.getByLabelText("Product"), values.product);
     if (values.version !== undefined) await u.selectOptions(screen.getByLabelText("Version"), values.version);
     if (values.type !== undefined) await u.selectOptions(screen.getByLabelText("Document type"), values.type);
@@ -217,7 +217,7 @@ describe("upload", () => {
   it("offers only the master lists' active values, as dropdowns: nothing is typed", async () => {
     server({ "GET /documents": list() });
     render(<DocumentsPage active />);
-    await screen.findByRole("option", { name: "Content Management" });
+    await screen.findAllByRole("option", { name: "Content Management" });
 
     expect(optionsOf("Product")).toEqual(["Choose…", "Content Management", "Documentum", "Acme"]);
     expect(optionsOf("Version")).toEqual(["Choose…", "16.2", "1.0"]); // 20.2 is retired
@@ -263,7 +263,7 @@ describe("upload", () => {
     render(<DocumentsPage active />);
     expect(await screen.findByText(/Couldn't load the master lists/)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByRole("option", { name: "Content Management" })).toBeTruthy();
+    expect(await screen.findAllByRole("option", { name: "Content Management" })).toBeTruthy();
     expect(screen.queryByText(/Couldn't load the master lists/)).toBeNull();
   });
 
@@ -447,5 +447,106 @@ describe("delete", () => {
     expect(alert.textContent).toContain(body.detail);
     expect(screen.getByText("Release Notes.pdf")).toBeTruthy();
     await waitFor(() => expect(api.count("GET /documents")).toBe(2)); // reloaded to show what is left
+  });
+});
+
+describe("tags", () => {
+  const TAGGED = doc({
+    id: "id-tagged", filename: "tagged.md", source: "content-management/16.2/release-notes/tagged.md",
+    product: "content-management", version: "16.2", doc_type: "release-notes",
+    tags: [
+      { id: 30, category: "module", code: "workflow", label: "Workflow", active: true },
+      { id: 32, category: "module", code: "old", label: "Old module", active: false },
+      { id: 41, category: "audience", code: "developers", label: "Developers", active: true },
+    ],
+  });
+  const RETIRED_VERSION = doc({ id: "id-old", filename: "old.md", source: "acme/20.2/notes/old.md", product: "acme",
+    version: "20.2", doc_type: "notes" });
+  const UNLISTED = doc({ id: "id-hand", filename: "by-hand.md", source: "documentum/23.4/guides/by-hand.md",
+    product: "documentum", version: "23.4", doc_type: "guides", origin: "folder", unlisted: ["version", "doc_type"] });
+
+  function chips(name: string) {
+    return within(within(rowFor(name)).getByText(name).closest("tr")!.querySelector(".tag-list") as HTMLElement)
+      .getAllByTitle(/.*/)
+      .map((chip) => `${chip.getAttribute("title")}: ${chip.textContent}`);
+  }
+
+  it("shows each document's tags by label, marking retired values and values not in the master list", async () => {
+    server({ "GET /documents": list(TAGGED, RETIRED_VERSION, UNLISTED) });
+    render(<DocumentsPage active />);
+    await screen.findByText("tagged.md");
+    await screen.findAllByRole("option", { name: "Content Management" });
+
+    expect(chips("tagged.md")).toEqual([
+      "Product: Content Management", "Version: 16.2", "Document type: Release notes",
+      "Module: Workflow", "Module: Old module · retired", "Audience: Developers"]);
+    expect(chips("old.md")).toEqual(["Product: Acme", "Version: 20.2 · retired", "Document type: Notes"]);
+    expect(chips("by-hand.md")).toEqual([
+      "Product: Documentum", "Version: 23.4 · not in master list", "Document type: guides · not in master list"]);
+  });
+
+  it("filters the list by any category, built-in or extra", async () => {
+    server({ "GET /documents": list(TAGGED, RETIRED_VERSION, UNLISTED, INDEXED) });
+    render(<DocumentsPage active />);
+    await screen.findByText("tagged.md");
+    await screen.findAllByRole("option", { name: "Content Management" });
+    const names = () => rows().map((r) => within(r).getByRole("strong").textContent);
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Module" }), "Workflow");
+    expect(names()).toEqual(["tagged.md"]);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Module" }), "All: Module");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Version" }), "20.2 (retired)");
+    expect(names()).toEqual(["old.md"]); // a retired value still filters
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Product" }), "Documentum");
+    expect(screen.getByText("No documents match this search.")).toBeTruthy();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by Version" }), "16.2");
+    expect(names()).toEqual(["Release Notes.pdf"]);
+  });
+
+  it("edits a document's extra tags; retired ones it has may stay, and none needs the admin key", async () => {
+    const saved: DocumentRecord = { ...TAGGED, tags: [
+      { id: 31, category: "module", code: "search", label: "Search", active: true },
+      { id: 41, category: "audience", code: "developers", label: "Developers", active: true },
+      { id: 40, category: "audience", code: "admins", label: "Administrators", active: true },
+    ] };
+    const api = server({
+      "GET /documents": list(TAGGED),
+      "PUT /documents/id-tagged/tags": () => Response.json(saved),
+    });
+    render(<DocumentsPage active />);
+    await screen.findByText("tagged.md");
+    await screen.findAllByRole("option", { name: "Content Management" });
+    const u = userEvent.setup();
+
+    await u.click(screen.getByRole("button", { name: "Edit tags of tagged.md" }));
+    const editor = screen.getByRole("group", { name: "Tags of tagged.md" });
+    // The single-value Module offers active values plus the retired one the document has.
+    expect(within(editor).getAllByRole("combobox")).toHaveLength(1);
+    expect(within(within(editor).getByLabelText("Module")).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "None", "Workflow", "Search", "Old module (retired)"]);
+    await u.selectOptions(within(editor).getByLabelText("Module"), "Search");
+    await u.click(within(editor).getByRole("checkbox", { name: "Administrators" }));
+    await u.click(within(editor).getByRole("button", { name: "Save tags" }));
+
+    expect(await screen.findByText("Saved the tags of tagged.md.")).toBeTruthy();
+    const put = api.calls.find((c) => c.key === "PUT /documents/id-tagged/tags")!;
+    expect(JSON.parse(put.init!.body as string)).toEqual({ value_ids: [31, 41, 40] });
+    expect(new Headers(put.init!.headers).has("X-Admin-Key")).toBe(false);
+    expect(screen.queryByRole("group", { name: "Tags of tagged.md" })).toBeNull();
+    expect(chips("tagged.md")).toContain("Module: Search");
+  });
+
+  it("keeps the editor open with the server's reason when saving fails", async () => {
+    server({
+      "GET /documents": list(TAGGED),
+      "PUT /documents/id-tagged/tags": status(422, { detail: "Module takes one value only." }),
+    });
+    render(<DocumentsPage active />);
+    await screen.findByText("tagged.md");
+    await screen.findAllByRole("option", { name: "Content Management" });
+    await userEvent.click(screen.getByRole("button", { name: "Edit tags of tagged.md" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save tags" }));
+    const editor = screen.getByRole("group", { name: "Tags of tagged.md" });
+    expect((await within(editor).findByRole("alert")).textContent).toContain("Module takes one value only.");
   });
 });
