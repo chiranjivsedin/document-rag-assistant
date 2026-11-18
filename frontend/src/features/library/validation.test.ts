@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fileProblem, folderNameProblem, pyStrip, uploadSuffix } from "./validation";
+import { categoryKeyProblem, fileProblem, folderNameProblem, labelProblem, pyStrip, uploadSuffix } from "./validation";
 
 // The same cases as the server's own tests (tests/unit/test_dms_storage.py), so both sides agree.
 const RULE =
@@ -64,5 +64,33 @@ describe("uploadSuffix and fileProblem (the server's clean_filename)", () => {
     expect(fileProblem(null)).toBe("Choose a file to upload.");
     expect(fileProblem(file("notes.md", ""))).toBe("The file is empty.");
     expect(fileProblem(file("NOTES.PDF"))).toBeNull();
+  });
+});
+
+// The same cases as tests/unit/test_tags.py (rag.dms.tags: check_category_key(), check_label(), check_code()).
+describe("tag rules (the server's rag.dms.tags)", () => {
+  it.each([["module"], ["audience"], ["m"], ["os-family2"], [" module "]])("accepts the category key %j", (key) => {
+    expect(categoryKeyProblem(key)).toBeNull();
+  });
+
+  it.each([[""], ["Module"], ["2module"], ["-x"], ["a_b"], ["a b"], ["a:b"], ["x".repeat(33)]])("refuses the key %j", (key) => {
+    expect(categoryKeyProblem(key)).toBe(
+      "The key must be 1-32 lowercase letters, digits or hyphens, starting with a letter (for example module).",
+    );
+  });
+
+  it.each([["product"], ["version"], ["doc_type"]])("refuses the built-in key %j", (key) => {
+    expect(categoryKeyProblem(key)).toBe(`'${key}' is a built-in category.`);
+  });
+
+  it("labels: 1-64 characters once spaces are trimmed and collapsed", () => {
+    expect(labelProblem("  Release   notes ")).toBeNull();
+    expect(labelProblem("x".repeat(64))).toBeNull();
+    for (const bad of ["", "   ", "x".repeat(65)]) expect(labelProblem(bad)).toBe("The label must be 1-64 characters.");
+  });
+
+  it("codes follow the folder-name rule", () => {
+    for (const bad of ["../x", "a b", "-a", "con", "."]) expect(folderNameProblem(bad, "The code")).not.toBeNull();
+    expect(folderNameProblem("release-notes", "The code")).toBeNull();
   });
 });

@@ -1810,8 +1810,38 @@ textarea {
   box-shadow: 0 0 0 4px var(--accent-soft);
 }
 .form-field input[aria-invalid="true"],
+.select-field[aria-invalid="true"],
 .file-picker:has(input[aria-invalid="true"]) {
   border-color: var(--bad);
+}
+/* Extra tags in the upload form and the edit-tags dialog: one dropdown or one group of check boxes per category. */
+.upload-tags {
+  grid-column: 1 / -1;
+  grid-row: 2; /* under the file and the fields, with the Upload button staying beside them */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.tag-choices {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px 14px;
+}
+.tag-choices legend {
+  padding: 0;
+  margin-bottom: 5px;
+}
+.tag-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  color: var(--text);
+  cursor: pointer;
 }
 .field-problem {
   margin: 0;
@@ -2192,6 +2222,10 @@ textarea {
   .upload-file,
   .upload-actions {
     padding-top: 0;
+  }
+
+  .upload-tags {
+    grid-row: auto;
   }
 
   .library-filters {

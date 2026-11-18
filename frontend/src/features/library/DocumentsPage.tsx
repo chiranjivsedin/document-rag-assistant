@@ -1,25 +1,16 @@
 import { useMemo, useState } from "react";
 
 import { startIngest } from "../../api/client";
-import type { DocumentRecord, DocumentStatus } from "../../api/types";
+import type { DocumentStatus } from "../../api/types";
 import { describeError, ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
 import { AlertIcon, CheckIcon, IndexIcon, RetryIcon } from "../../components/Icons";
 import { type DeleteOutcome, DocumentTable } from "./DocumentTable";
-import { distinct, isWaiting, matchesSearch, STATUS_LABELS } from "./format";
-import { type Suggestions, UploadCard } from "./UploadCard";
+import { useTags } from "../tags/useTags";
+import { isWaiting, matchesSearch, STATUS_LABELS } from "./format";
+import { UploadCard } from "./UploadCard";
 import { useDocuments } from "./useDocuments";
 
-const COMMON_TYPES = ["release-notes", "deprecated-features"];
-
 type Notice = { kind: "ok"; text: string } | { kind: "error"; error: ErrorText } | null;
-
-function suggestionsFrom(documents: DocumentRecord[]): Suggestions {
-  return {
-    product: distinct(documents.map((d) => d.product)),
-    version: distinct(documents.map((d) => d.version)),
-    docType: distinct([...COMMON_TYPES, ...documents.map((d) => d.doc_type)]),
-  };
-}
 
 /**
  * The document library: upload files, see whether each one is indexed, open or download the original, and delete
@@ -28,6 +19,7 @@ function suggestionsFrom(documents: DocumentRecord[]): Suggestions {
  */
 export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boolean; pollIntervalMs?: number }) {
   const { state, reload, add, remove } = useDocuments(active, pollIntervalMs);
+  const tags = useTags();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | "all">("all");
   const [notice, setNotice] = useState<Notice>(null);
@@ -42,7 +34,6 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
     failed: documents.filter((d) => d.status === "failed").length,
   };
   const canIndex = documents.some((d) => d.status === "pending" || d.status === "failed");
-  const suggestions = useMemo(() => suggestionsFrom(documents), [documents]);
 
   function deleted({ document, error }: DeleteOutcome) {
     if (error) {
@@ -104,7 +95,7 @@ export function DocumentsPage({ active, pollIntervalMs = 3000 }: { active: boole
       </section>
 
       <UploadCard
-        suggestions={suggestions}
+        tags={tags}
         onUploaded={(document) => {
           setNotice(null);
           add(document);

@@ -1,45 +1,103 @@
 import { useRef, useState, type FormEvent } from "react";
 
 import { uploadDocument } from "../../api/client";
-import type { UploadedDocument } from "../../api/types";
+import type { BuiltinKey, TagCategory, UploadedDocument } from "../../api/types";
 import { describeError, ErrorMessage, type ErrorText } from "../../components/ErrorMessage";
-import { ArrowUpIcon, CheckIcon, FileIcon } from "../../components/Icons";
+import { AlertIcon, ArrowUpIcon, CheckIcon, FileIcon, RetryIcon } from "../../components/Icons";
+import { activeValues, findCategory, type TagsState } from "../tags/useTags";
 import { formatSize } from "./format";
-import { fileProblem, folderNameProblem, pyStrip, SUPPORTED_SUFFIXES } from "./validation";
+import { fileProblem, SUPPORTED_SUFFIXES } from "./validation";
 
-const FIELDS = [
-  { key: "product", label: "Product", placeholder: "e.g. documentum" },
-  { key: "version", label: "Version", placeholder: "e.g. 16.2" },
-  { key: "docType", label: "Document type", placeholder: "e.g. release-notes" },
-] as const;
+// The three built-in categories, picked from their master lists (never typed): they become the file's folders.
+const FIELDS: Array<{ key: BuiltinKey; label: string }> = [
+  { key: "product", label: "Product" },
+  { key: "version", label: "Version" },
+  { key: "doc_type", label: "Document type" },
+];
 
-type FieldKey = (typeof FIELDS)[number]["key"];
-type Problems = Partial<Record<FieldKey | "file", string>>;
-
-export interface Suggestions {
-  product: string[];
-  version: string[];
-  docType: string[];
-}
+type Problems = Partial<Record<BuiltinKey | "file", string>>;
 
 type Outcome = { kind: "uploaded"; document: UploadedDocument } | { kind: "error"; error: ErrorText } | null;
 
-/** Upload one PDF, Markdown or text file into the library under product / version / type. */
-export function UploadCard({ suggestions, onUploaded }: { suggestions: Suggestions; onUploaded: (d: UploadedDocument) => void }) {
+/** One extra category: a dropdown when a document takes one value, check boxes when it may take several. */
+export function ExtraTagField({
+  category,
+  chosen,
+  onChange,
+  idPrefix,
+  keepIds = [],
+}: {
+  category: TagCategory;
+  chosen: number[];
+  onChange: (ids: number[]) => void;
+  idPrefix: string;
+  keepIds?: number[]; // retired values the document already has: still offered, so they can stay
+}) {
+  const offered = category.values.filter((value) => value.active || keepIds.includes(value.id));
+  const id = `${idPrefix}-${category.key}`;
+  if (!category.multiple) {
+    const current = chosen.find((value) => offered.some((v) => v.id === value));
+    return (
+      <div className="form-field">
+        <label htmlFor={id}>{category.label}</label>
+        <select
+          id={id}
+          className="select-field"
+          value={current === undefined ? "" : String(current)}
+          onChange={(event) => onChange(event.target.value ? [Number(event.target.value)] : [])}
+        >
+          <option value="">None</option>
+          {offered.map((value) => (
+            <option key={value.id} value={value.id}>
+              {value.active ? value.label : `${value.label} (retired)`}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+  return (
+    <fieldset className="form-field tag-choices">
+      <legend>{category.label}</legend>
+      {offered.length === 0 && <span className="hint">No values yet.</span>}
+      {offered.map((value) => (
+        <label key={value.id} className="tag-choice">
+          <input
+            type="checkbox"
+            checked={chosen.includes(value.id)}
+            onChange={(event) =>
+              onChange(event.target.checked ? [...chosen, value.id] : chosen.filter((other) => other !== value.id))
+            }
+          />
+          {value.active ? value.label : `${value.label} (retired)`}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+/** Upload one PDF, Markdown or text file into the library, described with values from the master lists only. */
+export function UploadCard({ tags, onUploaded }: { tags: TagsState; onUploaded: (d: UploadedDocument) => void }) {
   const [file, setFile] = useState<File | null>(null);
-  const [values, setValues] = useState<Record<FieldKey, string>>({ product: "", version: "", docType: "" });
+  const [values, setValues] = useState<Record<BuiltinKey, string>>({ product: "", version: "", doc_type: "" });
+  const [extra, setExtra] = useState<Record<string, number[]>>({});
   const [problems, setProblems] = useState<Problems>({});
   const [uploading, setUploading] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const extraCategories = tags.categories.filter((category) => !category.builtin);
+  const offered = (key: BuiltinKey) => {
+    const category = findCategory(tags.categories, key);
+    return category ? activeValues(category) : [];
+  };
 
   function check(): Problems {
     const found: Problems = {};
     const fileIssue = fileProblem(file);
     if (fileIssue) found.file = fileIssue;
     for (const { key, label } of FIELDS) {
-      const issue = folderNameProblem(values[key], label);
-      if (issue) found[key] = issue;
+      if (!offered(key).some((value) => value.code === values[key])) found[key] = `${label} is required.`;
     }
     return found;
   }
@@ -54,13 +112,14 @@ export function UploadCard({ suggestions, onUploaded }: { suggestions: Suggestio
     setUploading(true);
     try {
       const document = await uploadDocument(file, {
-        product: pyStrip(values.product),
-        version: pyStrip(values.version),
-        docType: pyStrip(values.docType),
+        product: values.product,
+        version: values.version,
+        docType: values.doc_type,
+        tagIds: extraCategories.flatMap((category) => extra[category.key] ?? []),
       });
       onUploaded(document);
       setOutcome({ kind: "uploaded", document });
-      setFile(null); // keep product, version and type for the next file
+      setFile(null); // keep the values and tags for the next file
       if (fileInput.current) fileInput.current.value = "";
     } catch (error) {
       setOutcome({ kind: "error", error: describeError(error) });
@@ -69,7 +128,7 @@ export function UploadCard({ suggestions, onUploaded }: { suggestions: Suggestio
     }
   }
 
-  const describedBy = (key: FieldKey | "file") => (problems[key] ? `upload-${key}-problem` : undefined);
+  const describedBy = (key: BuiltinKey | "file") => (problems[key] ? `upload-${key}-problem` : undefined);
 
   return (
     <section className="panel-card upload-card" aria-labelledby="upload-heading">
@@ -79,10 +138,23 @@ export function UploadCard({ suggestions, onUploaded }: { suggestions: Suggestio
           Upload a document
         </h3>
         <p className="hint">
-          PDF with selectable text, Markdown or plain text. It is stored under product / version / type and indexed
-          straight away.
+          PDF with selectable text, Markdown or plain text. Choose its product, version and type from the master lists;
+          it is stored under them and indexed straight away.
         </p>
       </div>
+
+      {tags.error && (
+        <p className="banner banner-warn">
+          <AlertIcon />
+          <span className="banner-body">
+            Couldn't load the master lists ({tags.error}).{" "}
+            <button type="button" className="button button-ghost button-small" onClick={tags.refresh}>
+              <RetryIcon />
+              Try again
+            </button>
+          </span>
+        </p>
+      )}
 
       <form className="upload-form" onSubmit={submit} noValidate>
         <div className="upload-file">
@@ -111,16 +183,13 @@ export function UploadCard({ suggestions, onUploaded }: { suggestions: Suggestio
         </div>
 
         <div className="upload-fields">
-          {FIELDS.map(({ key, label, placeholder }) => (
+          {FIELDS.map(({ key, label }) => (
             <div key={key} className="form-field">
               <label htmlFor={`upload-${key}`}>{label}</label>
-              <input
+              <select
                 id={`upload-${key}`}
+                className="select-field"
                 value={values[key]}
-                placeholder={placeholder}
-                list={`upload-${key}-suggestions`}
-                autoComplete="off"
-                spellCheck={false}
                 aria-invalid={problems[key] ? true : undefined}
                 aria-describedby={describedBy(key)}
                 onChange={(event) => {
@@ -128,20 +197,36 @@ export function UploadCard({ suggestions, onUploaded }: { suggestions: Suggestio
                   setValues((current) => ({ ...current, [key]: value }));
                   setProblems(({ [key]: _ignored, ...rest }) => rest);
                 }}
-              />
+              >
+                <option value="">{tags.loading ? "Loading…" : "Choose…"}</option>
+                {offered(key).map((value) => (
+                  <option key={value.id} value={value.code}>
+                    {value.label}
+                  </option>
+                ))}
+              </select>
               {problems[key] && (
                 <span className="field-problem" id={`upload-${key}-problem`}>
                   {problems[key]}
                 </span>
               )}
-              <datalist id={`upload-${key}-suggestions`}>
-                {suggestions[key].map((value) => (
-                  <option key={value} value={value} />
-                ))}
-              </datalist>
             </div>
           ))}
         </div>
+
+        {extraCategories.length > 0 && (
+          <div className="upload-tags" aria-label="Tags">
+            {extraCategories.map((category) => (
+              <ExtraTagField
+                key={category.key}
+                category={category}
+                idPrefix="upload-tag"
+                chosen={extra[category.key] ?? []}
+                onChange={(ids) => setExtra((current) => ({ ...current, [category.key]: ids }))}
+              />
+            ))}
+          </div>
+        )}
 
         <div className="upload-actions">
           <button type="submit" className="button button-primary" disabled={uploading}>

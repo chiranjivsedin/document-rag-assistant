@@ -32,6 +32,34 @@ export function folderNameProblem(value: string, label: string): string | null {
   return null;
 }
 
+// The tag lists' own rules (src/rag/dms/tags.py: check_category_key() and check_label(); a value's code follows
+// folderNameProblem()). validation.test.ts uses the same cases as tests/unit/test_tags.py.
+export const MAX_KEY_CHARS = 32;
+export const MAX_LABEL_CHARS = 64;
+const CATEGORY_KEY = /^[a-z][a-z0-9-]{0,31}$/;
+const BUILTIN_CATEGORY_KEYS = ["product", "version", "doc_type"];
+
+/** The problem with a new category's key, or null. */
+export function categoryKeyProblem(value: string): string | null {
+  const key = pyStrip(value);
+  if (BUILTIN_CATEGORY_KEYS.includes(key)) return `'${key}' is a built-in category.`;
+  if (!CATEGORY_KEY.test(key)) {
+    return `The key must be 1-${MAX_KEY_CHARS} lowercase letters, digits or hyphens, starting with a letter (for example module).`;
+  }
+  return null;
+}
+
+/** A label as the server stores it: trimmed, inner runs of spaces made one. */
+export function cleanLabel(value: string): string {
+  return value.split(/\s+/).filter(Boolean).join(" ");
+}
+
+/** The problem with a category's or value's label, or null. */
+export function labelProblem(value: string): string | null {
+  const label = cleanLabel(value);
+  return label && label.length <= MAX_LABEL_CHARS ? null : `The label must be 1-${MAX_LABEL_CHARS} characters.`;
+}
+
 /**
  * The extension the server will see for a file name: the last path part, reduced to ASCII the way the server does
  * it (NFKD, then dropping what has no ASCII form), then everything after the last dot, lower-cased.

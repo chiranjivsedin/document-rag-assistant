@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  addTagCategory,
+  addTagValue,
   ApiError,
   ApiUnreachableError,
   deleteDocument,
+  deleteTagValue,
+  getTags,
+  setDocumentTags,
+  updateTagValue,
   documentFileUrl,
   errorDetail,
   getHealth,
@@ -210,5 +216,71 @@ describe("document library", () => {
   it("documentFileUrl builds the open and download links", () => {
     expect(documentFileUrl("id 1")).toBe("/documents/id%201/file");
     expect(documentFileUrl("id 1", true)).toBe("/documents/id%201/file?download=true");
+  });
+});
+
+describe("tags", () => {
+  const CATEGORIES = [
+    { key: "product", label: "Product", builtin: true, multiple: false,
+      values: [{ id: 1, code: "content-management", label: "Content Management", active: true }] },
+  ];
+
+  function headersOf(fetch: ReturnType<typeof respond>, call = 0): Headers {
+    const init = fetch.mock.calls[call] as unknown as [string, RequestInit];
+    return new Headers(init[1].headers);
+  }
+
+  it("getTags returns the categories and sends no admin key", async () => {
+    const fetch = respond(200, { categories: CATEGORIES });
+    expect(await getTags()).toEqual(CATEGORIES);
+    expect(fetch).toHaveBeenCalledWith("/tags", expect.anything());
+    expect(headersOf(fetch).has("X-Admin-Key")).toBe(false);
+  });
+
+  it("getTags refuses a body without a categories list", async () => {
+    respond(200, { answer: "not tags" });
+    await expect(getTags()).rejects.toMatchObject({ detail: "The tag lists came back in an unexpected form." });
+  });
+
+  it("uploadDocument sends each extra tag as a repeated tag field, and no admin key", async () => {
+    const fetch = respond(201, { id: "x", ingest_job_id: null });
+    await uploadDocument(new File(["x"], "a.md"), { product: "p", version: "1", docType: "t", tagIds: [4, 9] });
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.body as FormData).getAll("tag")).toEqual(["4", "9"]);
+    expect(init.headers).toBeUndefined();
+  });
+
+  it("setDocumentTags PUTs the value ids as JSON, without an admin key", async () => {
+    const fetch = respond(200, { id: "id 1", tags: [] });
+    expect(await setDocumentTags("id 1", [3, 5])).toEqual({ id: "id 1", tags: [] });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, init.body]).toEqual(["/documents/id%201/tags", "PUT", JSON.stringify({ value_ids: [3, 5] })]);
+    expect(headersOf(fetch).has("X-Admin-Key")).toBe(false);
+  });
+
+  it("admin calls send the key in the X-Admin-Key header, never in the URL", async () => {
+    const fetch = respond(201, { key: "module" });
+    await addTagCategory("the key", { key: "module", label: "Module", multiple: true });
+    await addTagValue("the key", "module", { code: "workflow", label: "Workflow" });
+    await updateTagValue("the key", 7, { active: false });
+    const calls = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => [url, init.method, init.body])).toEqual([
+      ["/tags/categories", "POST", JSON.stringify({ key: "module", label: "Module", multiple: true })],
+      ["/tags/categories/module/values", "POST", JSON.stringify({ code: "workflow", label: "Workflow" })],
+      ["/tags/values/7", "PATCH", JSON.stringify({ active: false })],
+    ]);
+    for (let call = 0; call < 3; call++) {
+      expect(headersOf(fetch, call).get("X-Admin-Key")).toBe("the key");
+      expect(calls[call][0]).not.toContain("key=");
+    }
+  });
+
+  it("deleteTagValue succeeds on 204 and reports a value in use", async () => {
+    const fetch = respond(204);
+    await deleteTagValue("k", 7);
+    expect(fetch).toHaveBeenCalledWith("/tags/values/7", expect.objectContaining({ method: "DELETE" }));
+    expect(headersOf(fetch).get("X-Admin-Key")).toBe("k");
+    respond(409, { detail: "'24.4' is in use, so it can only be retired." });
+    await expect(deleteTagValue("k", 7)).rejects.toMatchObject({ status: 409 });
   });
 });

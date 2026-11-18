@@ -32,6 +32,8 @@ const doc = (overrides: Partial<DocumentRecord>): DocumentRecord => ({
   chunk_count: 3,
   added_at: "2026-11-02T09:00:00Z",
   indexed_at: "2026-11-02T09:01:00Z",
+  tags: [],
+  unlisted: [],
   ...overrides,
 });
 

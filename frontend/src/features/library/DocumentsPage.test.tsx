@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DocumentRecord, UploadedDocument } from "../../api/types";
+import type { DocumentRecord, TagCategory, UploadedDocument } from "../../api/types";
 import { DocumentsPage } from "./DocumentsPage";
 
 function doc(overrides: Partial<DocumentRecord>): DocumentRecord {
@@ -22,6 +22,8 @@ function doc(overrides: Partial<DocumentRecord>): DocumentRecord {
     chunk_count: 3,
     added_at: "2026-11-02T09:00:00Z",
     indexed_at: "2026-11-02T09:01:00Z",
+    tags: [],
+    unlisted: [],
     ...overrides,
   };
 }
@@ -37,11 +39,41 @@ const FOLDER = doc({ id: "id-folder", source: "acme/readme.txt", filename: "read
 
 type Handler = (init: RequestInit | undefined, call: number) => Response | Promise<Response>;
 
+// The master lists the screen loads (GET /tags): the three built-ins, with a retired version, plus an extra
+// single-value category "module" and a multi-value one "audience".
+const TAGS: TagCategory[] = [
+  { key: "product", label: "Product", builtin: true, multiple: false, values: [
+    { id: 1, code: "content-management", label: "Content Management", active: true },
+    { id: 2, code: "documentum", label: "Documentum", active: true },
+    { id: 3, code: "acme", label: "Acme", active: true },
+  ] },
+  { key: "version", label: "Version", builtin: true, multiple: false, values: [
+    { id: 10, code: "16.2", label: "16.2", active: true },
+    { id: 11, code: "1.0", label: "1.0", active: true },
+    { id: 12, code: "20.2", label: "20.2", active: false },
+  ] },
+  { key: "doc_type", label: "Document type", builtin: true, multiple: false, values: [
+    { id: 20, code: "release-notes", label: "Release notes", active: true },
+    { id: 21, code: "notes", label: "Notes", active: true },
+  ] },
+  { key: "module", label: "Module", builtin: false, multiple: false, values: [
+    { id: 30, code: "workflow", label: "Workflow", active: true },
+    { id: 31, code: "search", label: "Search", active: true },
+    { id: 32, code: "old", label: "Old module", active: false },
+  ] },
+  { key: "audience", label: "Audience", builtin: false, multiple: true, values: [
+    { id: 40, code: "admins", label: "Administrators", active: true },
+    { id: 41, code: "developers", label: "Developers", active: true },
+  ] },
+];
+const tagLists: Handler = () => Response.json({ categories: TAGS });
+
 /**
  * fetch stand-in routed by "METHOD path". A list of handlers answers successive calls in turn (the last one repeats).
  * Unrouted calls fail the test.
  */
-function server(routes: Record<string, Handler | Handler[]>) {
+function server(given: Record<string, Handler | Handler[]>) {
+  const routes: Record<string, Handler | Handler[]> = { "GET /tags": tagLists, ...given };
   const calls: Array<{ key: string; init?: RequestInit }> = [];
   const counts: Record<string, number> = {};
   vi.stubGlobal(
@@ -172,10 +204,68 @@ describe("upload", () => {
   const user = () => userEvent.setup({ applyAccept: false });
 
   async function fill(u: ReturnType<typeof user>, values: { product?: string; version?: string; type?: string }) {
-    if (values.product !== undefined) await u.type(screen.getByLabelText("Product"), values.product);
-    if (values.version !== undefined) await u.type(screen.getByLabelText("Version"), values.version);
-    if (values.type !== undefined) await u.type(screen.getByLabelText("Document type"), values.type);
+    await screen.findByRole("option", { name: "Content Management" }); // the master lists have loaded
+    if (values.product !== undefined) await u.selectOptions(screen.getByLabelText("Product"), values.product);
+    if (values.version !== undefined) await u.selectOptions(screen.getByLabelText("Version"), values.version);
+    if (values.type !== undefined) await u.selectOptions(screen.getByLabelText("Document type"), values.type);
   }
+
+  function optionsOf(label: string) {
+    return within(screen.getByLabelText(label)).getAllByRole("option").map((o) => o.textContent);
+  }
+
+  it("offers only the master lists' active values, as dropdowns: nothing is typed", async () => {
+    server({ "GET /documents": list() });
+    render(<DocumentsPage active />);
+    await screen.findByRole("option", { name: "Content Management" });
+
+    expect(optionsOf("Product")).toEqual(["Choose…", "Content Management", "Documentum", "Acme"]);
+    expect(optionsOf("Version")).toEqual(["Choose…", "16.2", "1.0"]); // 20.2 is retired
+    expect(optionsOf("Document type")).toEqual(["Choose…", "Release notes", "Notes"]);
+    expect(optionsOf("Module")).toEqual(["None", "Workflow", "Search"]); // single value: a dropdown
+    const audience = screen.getByRole("group", { name: "Audience" }); // several values: check boxes
+    expect(within(audience).getAllByRole("checkbox")).toHaveLength(2);
+
+    const form = screen.getByRole("button", { name: "Upload" }).closest("form")!;
+    expect(within(form).queryAllByRole("textbox")).toHaveLength(0); // no free-text field left
+    expect(form.querySelector("datalist")).toBeNull();
+  });
+
+  it("sends the chosen codes and tag ids", async () => {
+    const uploaded: UploadedDocument = { ...PENDING, id: "id-new", ingest_job_id: null };
+    const api = server({
+      "GET /documents": list(),
+      "POST /documents": () => Response.json(uploaded, { status: 201 }),
+    });
+    render(<DocumentsPage active pollIntervalMs={60_000} />);
+    await screen.findByText(/No documents yet/);
+    const u = user();
+    await u.upload(screen.getByLabelText("File"), new File(["x"], "notes.md"));
+    await fill(u, { product: "Content Management", version: "16.2", type: "Release notes" });
+    await u.selectOptions(screen.getByLabelText("Module"), "Search");
+    await u.click(screen.getByRole("checkbox", { name: "Administrators" }));
+    await u.click(screen.getByRole("checkbox", { name: "Developers" }));
+    await u.click(screen.getByRole("checkbox", { name: "Administrators" })); // and off again
+    await u.click(screen.getByRole("button", { name: "Upload" }));
+
+    await screen.findByText(/It will be indexed/);
+    const body = api.calls.find((c) => c.key === "POST /documents")!.init!.body as FormData;
+    expect([body.get("product"), body.get("version"), body.get("doc_type")]).toEqual([
+      "content-management", "16.2", "release-notes"]);
+    expect(body.getAll("tag")).toEqual(["31", "41"]);
+  });
+
+  it("says when the master lists can't be loaded, and can try again", async () => {
+    server({
+      "GET /documents": list(),
+      "GET /tags": [status(503, { detail: "Ollama or the database stopped responding. Check GET /health." }), tagLists],
+    });
+    render(<DocumentsPage active />);
+    expect(await screen.findByText(/Couldn't load the master lists/)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("option", { name: "Content Management" })).toBeTruthy();
+    expect(screen.queryByText(/Couldn't load the master lists/)).toBeNull();
+  });
 
   it("checks the form in the browser with the server's rules, without sending anything", async () => {
     const api = server({ "GET /documents": list() });
@@ -190,18 +280,18 @@ describe("upload", () => {
     expect(screen.getByText("Document type is required.")).toBeTruthy();
 
     await u.upload(screen.getByLabelText("File"), new File(["x"], "notes.docx"));
-    await fill(u, { product: "documentum", version: "../16.2", type: "release notes" });
+    await fill(u, { product: "Documentum", type: "Release notes" });
     await u.click(screen.getByRole("button", { name: "Upload" }));
     expect(screen.getByText("Only .md, .pdf, .txt files can be uploaded.")).toBeTruthy();
-    expect(screen.getByText(/^Version must be 1-64 letters/)).toBeTruthy();
-    expect(screen.getByText(/^Document type must be 1-64 letters/)).toBeTruthy();
+    expect(screen.getByText("Version is required.")).toBeTruthy();
+    expect(screen.queryByText("Document type is required.")).toBeNull();
     expect(screen.queryByText("Product is required.")).toBeNull();
     expect(screen.getByLabelText("Version").getAttribute("aria-invalid")).toBe("true");
 
     expect(api.count("POST /documents")).toBe(0);
   });
 
-  it("uploads the file with trimmed fields, shows it at once and says indexing started", async () => {
+  it("uploads the file, shows it at once and says indexing started", async () => {
     const uploaded: UploadedDocument = { ...PENDING, id: "id-new", filename: "New Notes.md",
       source: "documentum/16.2/release-notes/New Notes.md", ingest_job_id: "job-1" };
     const api = server({
@@ -213,7 +303,7 @@ describe("upload", () => {
     const u = user();
 
     await u.upload(screen.getByLabelText("File"), new File(["# Notes"], "New Notes.md"));
-    await fill(u, { product: "  documentum ", version: "16.2", type: "release-notes" });
+    await fill(u, { product: "Documentum", version: "16.2", type: "Release notes" });
     await u.click(screen.getByRole("button", { name: "Upload" }));
 
     const banner = (await screen.findByText(/Indexing has started/)).closest(".banner")!;
@@ -222,7 +312,7 @@ describe("upload", () => {
     expect([body.get("product"), body.get("version"), body.get("doc_type")]).toEqual(["documentum", "16.2", "release-notes"]);
     expect((body.get("file") as File).name).toBe("New Notes.md");
     await waitFor(() => expect(within(rowFor("New Notes.md")).getByText("Processing")).toBeTruthy());
-    expect(screen.getByLabelText("Product")).toHaveProperty("value", "  documentum "); // kept for the next file
+    expect(screen.getByLabelText("Product")).toHaveProperty("value", "documentum"); // kept for the next file
     expect(screen.getByText("Choose a file…")).toBeTruthy(); // the file is cleared
   });
 
@@ -235,7 +325,7 @@ describe("upload", () => {
     await screen.findByText(/No documents yet/);
     const u = user();
     await u.upload(screen.getByLabelText("File"), new File(["x"], "waiting.md"));
-    await fill(u, { product: "acme", version: "1.0", type: "notes" });
+    await fill(u, { product: "Acme", version: "1.0", type: "Notes" });
     await u.click(screen.getByRole("button", { name: "Upload" }));
     expect(await screen.findByText(/It will be indexed when indexing next runs/)).toBeTruthy();
   });
@@ -250,7 +340,7 @@ describe("upload", () => {
     await screen.findByText(/No documents yet/);
     const u = user();
     await u.upload(screen.getByLabelText("File"), new File(["x"], "waiting.md"));
-    await fill(u, { product: "acme", version: "1.0", type: "notes" });
+    await fill(u, { product: "Acme", version: "1.0", type: "Notes" });
     await u.click(screen.getByRole("button", { name: "Upload" }));
 
     const alert = await screen.findByRole("alert");

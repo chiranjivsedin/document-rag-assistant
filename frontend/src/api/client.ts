@@ -6,6 +6,11 @@ import type {
   DocumentRecord,
   HealthResponse,
   IngestJob,
+  NewTagCategory,
+  NewTagValue,
+  TagCategory,
+  TagValue,
+  TagValueChange,
   UploadedDocument,
   UploadFields,
 } from "./types";
@@ -124,6 +129,7 @@ export async function uploadDocument(file: File, fields: UploadFields, signal?: 
   form.append("product", fields.product);
   form.append("version", fields.version);
   form.append("doc_type", fields.docType);
+  for (const id of fields.tagIds ?? []) form.append("tag", String(id));
   const response = await send("/documents", { method: "POST", body: form, signal });
   const body = await readJson(response);
   if (response.ok) return body as UploadedDocument;
@@ -135,6 +141,68 @@ export async function deleteDocument(id: string, signal?: AbortSignal): Promise<
   const response = await send(`/documents/${encodeURIComponent(id)}`, { method: "DELETE", signal });
   if (response.status === 204) return;
   throw failure(response, await readJson(response));
+}
+
+/** PUT /documents/{id}/tags: replace the document's extra tags. Ordinary work: no admin key. */
+export async function setDocumentTags(id: string, valueIds: number[], signal?: AbortSignal): Promise<DocumentRecord> {
+  const response = await send(`/documents/${encodeURIComponent(id)}/tags`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value_ids: valueIds }),
+    signal,
+  });
+  const body = await readJson(response);
+  if (response.ok) return body as DocumentRecord;
+  throw failure(response, body);
+}
+
+/** GET /tags: every category with all its values (active and retired), built-ins first. Open to everyone. */
+export async function getTags(signal?: AbortSignal): Promise<TagCategory[]> {
+  const response = await send("/tags", { signal });
+  const body = await readJson(response);
+  const categories = (body as { categories?: unknown } | undefined)?.categories;
+  if (response.ok && Array.isArray(categories)) return categories as TagCategory[];
+  if (response.ok) throw new ApiError(response.status, "The tag lists came back in an unexpected form.");
+  throw failure(response, body);
+}
+
+/**
+ * An admin call: JSON body, and the admin key in the X-Admin-Key header (never in the URL, which ends up in logs and
+ * the browser history). 401 = missing or wrong key, 403 = admin disabled on the server.
+ */
+async function adminSend(adminKey: string, path: string, method: string, payload?: unknown): Promise<unknown> {
+  const headers: Record<string, string> = { "X-Admin-Key": adminKey };
+  if (payload !== undefined) headers["Content-Type"] = "application/json";
+  const response = await send(path, {
+    method,
+    headers,
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+  if (response.status === 204) return undefined;
+  const body = await readJson(response);
+  if (response.ok) return body;
+  throw failure(response, body);
+}
+
+/** POST /tags/categories (admin): add an extra category. */
+export async function addTagCategory(adminKey: string, category: NewTagCategory): Promise<TagCategory> {
+  return (await adminSend(adminKey, "/tags/categories", "POST", category)) as TagCategory;
+}
+
+/** POST /tags/categories/{key}/values (admin): add an active value. */
+export async function addTagValue(adminKey: string, categoryKey: string, value: NewTagValue): Promise<TagValue> {
+  const path = `/tags/categories/${encodeURIComponent(categoryKey)}/values`;
+  return (await adminSend(adminKey, path, "POST", value)) as TagValue;
+}
+
+/** PATCH /tags/values/{id} (admin): rename, retire (active: false) or restore a value. */
+export async function updateTagValue(adminKey: string, id: number, change: TagValueChange): Promise<TagValue> {
+  return (await adminSend(adminKey, `/tags/values/${id}`, "PATCH", change)) as TagValue;
+}
+
+/** DELETE /tags/values/{id} (admin): delete a value nothing uses (409 if it is in use: retire it instead). */
+export async function deleteTagValue(adminKey: string, id: number): Promise<void> {
+  await adminSend(adminKey, `/tags/values/${id}`, "DELETE");
 }
 
 /** Where the original file is served: shown in the browser, or saved with `download`. A plain link, no fetch. */

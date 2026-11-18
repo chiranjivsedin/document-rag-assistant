@@ -31,8 +31,10 @@ export const DEFAULT_TOP_K = 3;
 
 export interface ChatRequest {
   question: string; // 1–2000 characters after trimming
-  product?: string; // optional filters; leave out for "no filter"
+  product?: string; // optional filters (codes from the master lists); leave out for "no filter"
   version?: string;
+  doc_type?: string;
+  tags?: Record<string, string[]>; // extra category key -> codes: every category must match, any of its codes
   k?: number; // passages to retrieve, 1–20 (server default DEFAULT_TOP_K)
 }
 
@@ -75,6 +77,8 @@ export interface DocumentRecord {
   chunk_count: number | null; // passages in the index, once indexed
   added_at: string; // ISO 8601, UTC
   indexed_at: string | null;
+  tags: DocumentTag[]; // its extra tags (product, version and doc_type are the fields above)
+  unlisted: string[]; // "product", "version" or "doc_type" when its value isn't in the master list
 }
 
 export interface UploadedDocument extends DocumentRecord {
@@ -82,7 +86,56 @@ export interface UploadedDocument extends DocumentRecord {
 }
 
 export interface UploadFields {
-  product: string;
+  product: string; // codes from the master lists
   version: string;
   docType: string;
+  tagIds?: number[]; // extra tags: tag value ids
+}
+
+// Master data for tags (src/rag/api/tags.py, src/rag/dms/tags.py).
+
+/** The keys of the three built-in categories: the document's folders and fields. */
+export const BUILTIN_KEYS = ["product", "version", "doc_type"] as const;
+export type BuiltinKey = (typeof BUILTIN_KEYS)[number];
+
+export interface TagValue {
+  id: number;
+  code: string; // stable: what documents store (for a built-in category, the folder name)
+  label: string; // the name to show
+  active: boolean; // false = retired: no new use, still shown and still filtering
+}
+
+export interface TagCategory {
+  key: string; // product, version, doc_type, or an extra category's key
+  label: string;
+  builtin: boolean;
+  multiple: boolean; // whether a document may have several values
+  values: TagValue[]; // active and retired, in sort order
+}
+
+/** One of a document's extra tags. */
+export interface DocumentTag {
+  id: number; // the tag value's id
+  category: string; // the extra category's key
+  code: string;
+  label: string;
+  active: boolean;
+}
+
+export interface NewTagCategory {
+  key: string;
+  label: string;
+  multiple: boolean;
+}
+
+export interface NewTagValue {
+  code: string;
+  label: string;
+}
+
+/** Only the fields given change; a code never changes. */
+export interface TagValueChange {
+  label?: string;
+  active?: boolean;
+  sort_order?: number;
 }
