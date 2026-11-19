@@ -102,6 +102,11 @@ export function UploadCard({ tags, onUploaded }: { tags: TagsState; onUploaded: 
 
       <form className="upload-form" onSubmit={submit} noValidate>
         <div className="upload-file">
+          {/* A visible caption like the other fields' labels, so every control lines up; the input keeps its own
+              accessible name. */}
+          <span className="field-label" aria-hidden="true">
+            File
+          </span>
           <label className="file-picker">
             <input
               ref={fileInput}

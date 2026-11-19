@@ -2119,16 +2119,27 @@ textarea {
 .upload-head .hint {
   margin: 0;
 }
+/* One grid row: File, Product, Version, Document type, Upload. Every field has a caption of the same fixed height,
+   so all the controls (and the button) start on the same line; extra-category tags go on the row below. */
 .upload-form {
   display: grid;
-  grid-template-columns: minmax(200px, 1.1fr) minmax(0, 3fr) auto;
-  gap: 12px 16px;
+  grid-template-columns: minmax(200px, 1.3fr) repeat(3, minmax(0, 1fr)) auto;
+  gap: 14px 14px;
   align-items: start;
 }
 .upload-fields {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  display: contents;
+}
+.form-field > label:not(.tag-choice),
+.form-field > legend,
+.field-label {
+  display: block;
+  height: 15px;
+  line-height: 15px;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-3);
 }
 .form-field {
   display: grid;
@@ -2138,7 +2149,7 @@ textarea {
   font-weight: 500;
   color: var(--text-3);
 }
-.form-field input,
+.form-field input:not([type="checkbox"]),
 .search-field,
 .select-field {
   height: 38px;
@@ -2151,7 +2162,7 @@ textarea {
   font-size: 14px;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.form-field input:focus,
+.form-field input:not([type="checkbox"]):focus,
 .search-field:focus,
 .select-field:focus {
   outline: none;
@@ -2178,11 +2189,10 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
-  gap: 6px 14px;
+  gap: 8px;
 }
 .tag-choices legend {
-  padding: 0;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
 }
 /* Tags admin screen */
 .tags-page .tag-category {
@@ -2226,13 +2236,36 @@ textarea {
   background: var(--surface-2);
 }
 
+/* A value of a multi-value category: a pill toggle (the check box inside stays, for keyboard and screen readers). */
 .tag-choice {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
   font-size: 13.5px;
-  color: var(--text);
+  color: var(--text-2);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.tag-choice:hover {
+  border-color: var(--accent);
+}
+.tag-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 500;
+}
+.tag-choice:has(input:focus-visible) {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.tag-choice input {
+  margin: 0;
+  accent-color: var(--accent);
 }
 .field-problem {
   margin: 0;
@@ -2244,7 +2277,6 @@ textarea {
   display: grid;
   gap: 5px;
   min-width: 0;
-  padding-top: 20px; /* lines the picker up with the labelled inputs beside it */
 }
 .file-picker {
   position: relative;
@@ -2290,7 +2322,10 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 .upload-actions {
-  padding-top: 20px;
+  padding-top: 20px; /* the height of a field caption plus its gap */
+}
+.upload-actions .button {
+  height: 38px; /* the same height as the fields beside it */
 }
 
 /* Toolbar */
