@@ -25,6 +25,11 @@ HEADING = re.compile(r"(\d{1,2}(?:\.\d{1,2}){0,5})[ \t]+([A-Z][^\n]{0,119})")
 # and none of its lines is a heading (some entries there are cut short or wrapped and have no dots).
 DOT_LEADER = re.compile(r"\.{4,}|(?:\. ){3,}")
 TOC_LINES = 3
+# How many chapters a multi-level heading may jump ahead of the previous heading (see is_heading()). In the 107
+# OpenText Content Server PDFs (release notes 16.0–26.4, installation/upgrade/administration guides), real headings
+# jump up to 3 (a guide's chapters without numbered sections, whose own "N Title" headings aren't recognised);
+# every jump of 4 or more was a version table or revision-history row in the release notes.
+MAX_CHAPTER_JUMP = 3
 SECTION_PREFIX = "Section: "
 
 
@@ -86,7 +91,12 @@ def is_heading(line: str, previous: tuple[int, ...] | None) -> tuple[int, ...] |
     item, and no number part may be 0: that rules out table rows such as "7.0 N Y Y Y" or "0 None". A
     single-number heading ("8 Known issues") after another heading must also continue the numbering: a table
     row such as "16 Superuser User has Superuser" within section 6.7.1 fits HEADING but not the sequence.
-    Rejecting a real heading costs little: the next accepted one replaces it.
+    A multi-level heading after another heading may not jump ahead more than MAX_CHAPTER_JUMP chapters: a
+    component table's row such as "24.4 Windows Desktop" (a version number) within section 3.1 fits HEADING but
+    would otherwise label the following chunks "Section: 24.4 ...", which then match questions about version 24.4;
+    so would a revision-history row such as "6.6 SAP Business Suite" right after "1.1 Release Notes revision
+    history". Going back to a lower chapter stays allowed, so a wrongly accepted first heading can't block the
+    real ones after it. Rejecting a real heading costs little: the next accepted one replaces it.
     """
     match = HEADING.fullmatch(line)
     if (match is None or DOT_LEADER.search(line) or not re.search(r"[a-z]", match.group(2))
@@ -96,6 +106,8 @@ def is_heading(line: str, previous: tuple[int, ...] | None) -> tuple[int, ...] |
     if 0 in numbers:
         return None
     if len(numbers) == 1 and previous is not None and numbers[0] != previous[0] + 1:
+        return None
+    if len(numbers) > 1 and previous is not None and numbers[0] > previous[0] + MAX_CHAPTER_JUMP:
         return None
     return numbers
 

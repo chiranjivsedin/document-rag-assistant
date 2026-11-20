@@ -150,7 +150,7 @@ def test_table_of_contents_pages_have_no_headings():
     "4.6.6 Removing log4j 1.x files",
 ])
 def test_numbered_headings(line):
-    assert is_heading(line, (2, 1))
+    assert is_heading(line, None)  # the line's form only; the numbering rules are tested below
 
 
 @pytest.mark.parametrize("line", [
@@ -174,3 +174,19 @@ def test_a_single_number_heading_must_continue_the_numbering():
     assert is_heading("8 Sysadmin User has System", (6, 7, 1)) is None  # a table row in the Fundamentals Guide
     assert is_heading("16 Superuser User has Superuser", (6, 7, 1)) is None
     assert is_heading("2 Browse The user can look at property", (6, 7, 1)) is None
+
+
+def test_a_multi_level_heading_may_not_jump_far_ahead():
+    assert is_heading("24.4 Windows Desktop", None) == (24, 4)  # the first heading may have any number
+    assert is_heading("3.2 Licensed functionality", (3, 1)) == (3, 2)
+    assert is_heading("2.5 Discontinued Features", (2, 4, 9, 4)) == (2, 5)
+    # Content Server administration guides: chapters without numbered sections leave real gaps of 2 and 3
+    assert is_heading("27.1 Administer Usage Privileges", (25, 1)) == (27, 1)
+    assert is_heading("30.1 Installing a Content Server Module on the", (27, 3, 1)) == (30, 1)
+    # rows of a component table in the OpenText Content Management 24.4 release notes (component, version, ...)
+    assert is_heading("24.4 Windows Desktop", (3, 1)) is None
+    assert is_heading("24.4 Web Service Interface", (3, 1)) is None
+    assert is_heading("16.6.13 Content Suite Viewer", (2, 5)) is None
+    # a revision-history table row (the section a revision changed) right after "1.1 Release Notes revision history"
+    assert is_heading("6.6 SAP Business Suite", (1, 1)) is None
+    assert is_heading("2.4 New features", (24, 4)) == (2, 4)  # a wrongly accepted first heading doesn't stick

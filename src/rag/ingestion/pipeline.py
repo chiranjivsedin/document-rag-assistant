@@ -11,7 +11,8 @@ from rag.ingestion.loaders import file_metadata, iter_files, load_file
 
 # Bump when a change to loading or chunking should rebuild every file's chunks: the next ingest run then
 # re-processes every file once. Version 2: pages chunked as one text, section headings, no running headers.
-CHUNKING_VERSION = 2
+# Version 3: table rows such as "24.4 Windows Desktop" are no longer taken for section headings.
+CHUNKING_VERSION = 3
 
 
 def index_fingerprint(settings: Settings) -> str:
