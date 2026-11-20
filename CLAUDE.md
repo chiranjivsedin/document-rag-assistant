@@ -10,7 +10,7 @@ Branches:
 - `integration`: the complete working application (backend + frontend). Create each new phase's branch from it (e.g. `feature/dms-api`), and merge the branch back after review and approval.
 - `main`: lead-approved work only. It holds just the scaffold until the lead confirms requirements (VM, "16.2" product, mini DMS, hosting); `integration` is merged into it only then.
 - `poc/langchain-ollama`, `feature/rest-api`, `feature/react-frontend`, `feature/ui-redesign`, `fix/rag-answer-quality`, `fix/sidebar-history-scroll`, `docs/refresh-guides`, `feature/dms` (the document library): earlier branches on GitHub, each contained in `integration`; kept for reference.
-- Later branches were local only: each was fast-forwarded into `integration` after review and then deleted (serving the web app from the API, storage hardening, retrieval quality, hybrid search, 3 passages by default, the question log). Their commits are in `integration`'s history.
+- Later branches were local only: each was fast-forwarded into `integration` after review and then deleted (serving the web app from the API, storage hardening, retrieval quality, hybrid search, 3 passages by default, the question log, master-data tagging). Their commits are in `integration`'s history.
 
 ## Running the prototype (Windows, from the repo root)
 
