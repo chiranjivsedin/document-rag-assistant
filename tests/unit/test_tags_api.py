@@ -40,8 +40,8 @@ def test_get_tags_is_open(fake_tags):
     assert categories[0]["values"] == [
         {"id": fake_tags.value("product", "content-management").id, "code": "content-management",
          "label": "Content Management", "active": True}]
-    assert len(categories[1]["values"]) == 30
-    assert categories[1]["values"][0]["code"] == "16.2" and categories[1]["values"][0]["active"] is False
+    assert len(categories[1]["values"]) == 31
+    assert [(v["code"], v["active"]) for v in categories[1]["values"][:2]] == [("16.0", True), ("16.2", False)]
 
 
 @pytest.mark.parametrize("method, path, body", ADMIN_CALLS)

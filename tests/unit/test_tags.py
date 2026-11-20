@@ -25,7 +25,7 @@ def test_non_numeric_versions_sort_alphabetically_after_numbers():
 def test_seed_holds_exactly_the_agreed_values():
     assert set(SEED_VALUES) == set(BUILTIN_KEYS)
     versions = [code for code, _ in SEED_VALUES["version"]]
-    assert len(versions) == 30 and "26.3" not in versions
+    assert len(versions) == 31 and versions[0] == "16.0" and "16.1" not in versions and "26.3" not in versions
     assert versions == sorted(versions, key=version_sort_key)
     assert all(code == label for code, label in SEED_VALUES["version"])
     assert SEED_VALUES["product"] == [("content-management", "Content Management")]

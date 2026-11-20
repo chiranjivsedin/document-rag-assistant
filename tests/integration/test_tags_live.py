@@ -70,7 +70,7 @@ def test_seed_creates_the_three_builtins(tags):
         ("doc_type", "Document type", True, False)]
     assert [(v.code, v.label) for v in categories[0].values] == [("content-management", "Content Management")]
     assert [v.code for v in categories[1].values] == [code for code, _ in SEED_VALUES["version"]]
-    assert len(categories[1].values) == 30
+    assert len(categories[1].values) == 31
     assert [(v.code, v.label) for v in categories[2].values] == SEED_VALUES["doc_type"]
     assert all(v.active for c in categories for v in c.values)
 
@@ -82,7 +82,7 @@ def test_seed_is_idempotent_and_keeps_admin_changes(tags):
     tags.seed()
 
     versions = category(tags, "version").values
-    assert len(versions) == 30 and len({v.code for v in versions}) == 30
+    assert len(versions) == 31 and len({v.code for v in versions}) == 31
     assert value(tags, "version", "16.2") == retired and not retired.active
     assert value(tags, "doc_type", "release-notes") == relabelled
     assert relabelled.label == "Release notes (all)"

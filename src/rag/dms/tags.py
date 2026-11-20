@@ -39,7 +39,7 @@ BUILTIN_LABELS = {"product": "Product", "version": "Version", "doc_type": "Docum
 SEED_VALUES: dict[str, list[tuple[str, str]]] = {
     "product": [("content-management", "Content Management")],
     "version": [(v, v) for v in (
-        "16.2 16.4 16.6 16.7 20.2 20.3 20.4 21.1 21.2 21.3 21.4 22.1 22.2 22.3 22.4 "
+        "16.0 16.2 16.4 16.6 16.7 20.2 20.3 20.4 21.1 21.2 21.3 21.4 22.1 22.2 22.3 22.4 "
         "23.1 23.2 23.3 23.4 24.1 24.2 24.3 24.4 25.1 25.2 25.3 25.4 26.1 26.2 26.4"
     ).split()],
     "doc_type": [
